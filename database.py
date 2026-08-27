@@ -652,65 +652,42 @@ def init_db():
 # =========================================================
 
 def get_rows(page, per_page):
-
     db = get_firestore_db()
 
-    offset = (
-        page - 1
-    ) * per_page
+    offset = (page - 1) * per_page
 
-    docs = (
-        db.collection("history")
-        .stream()
-    )
+    docs = db.collection("history").stream()
 
     rows = []
 
     for doc in docs:
-
         data = doc.to_dict()
 
+        updated_at = data.get("updated_at")
+
         rows.append({
-
-            "tanggal":
-                data.get("tanggal"),
-
-            "periode":
-                data.get("periode"),
-
-            "nomor":
-                data.get("nomor"),
-
-            "source_url":
-                data.get("source_url")
-
+            "tanggal": data.get("tanggal"),
+            "periode": data.get("periode"),
+            "nomor": data.get("nomor"),
+            "source_url": data.get("source_url"),
+            "updated_at": updated_at
         })
 
     # =====================================================
-    # URUTKAN DATA TERBARU DI ATAS
+    # URUTKAN BERDASARKAN WAKTU UPDATE TERBARU
     # =====================================================
 
     rows.sort(
-
         key=lambda x: (
-
-            x.get("tanggal")
-            or "",
-
-            x.get("periode")
-            or ""
-
+            x.get("updated_at")
+            if x.get("updated_at") is not None
+            else datetime.min.replace(tzinfo=timezone.utc)
         ),
-
         reverse=True
     )
 
-    return rows[
-        offset:
-        offset + per_page
-    ]
-
-
+    return rows[offset:offset + per_page]
+    
 # =========================================================
 # HITUNG DATA
 # =========================================================
