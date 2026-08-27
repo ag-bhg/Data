@@ -1,119 +1,97 @@
 import os
 import json
-from datetime import datetime, timezone
-
 import firebase_admin
 from firebase_admin import credentials, firestore
 
-COLLECTION_NAME = "history"
+def get_db():
+    if not firebase_admin._apps:
+        firebase_json = os.environ.get("FIREBASE_CREDENTIALS")
 
-_db = None
+        if not firebase_json:
+            raise RuntimeError("FIREBASE_CREDENTIALS belum diset")
+
+        cred = credentials.Certificate(json.loads(firebase_json))
+        firebase_admin.initialize_app(cred)
+
+    return firestore.client()
 
 
 def init_db():
-    global _db
-
-    if _db is not None:
-        return
-
-    if not firebase_admin._apps:
-        service_account_json = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON")
-
-        if not service_account_json:
-            raise RuntimeError(
-                "FIREBASE_SERVICE_ACCOUNT_JSON belum diset"
-            )
-
-        service_account_info = json.loads(service_account_json)
-
-        cred = credentials.Certificate(service_account_info)
-        firebase_admin.initialize_app(cred)
-
-    _db = firestore.client()
-
-
-def _get_db():
-    if _db is None:
-        init_db()
-    return _db
-
-
-def _document_id(row):
-    """
-    Membuat ID unik berdasarkan tanggal + periode + nomor.
-    Ini menggantikan UNIQUE(tanggal, periode, nomor) di SQLite.
-    """
-    tanggal = str(row["tanggal"])
-    periode = str(row["periode"])
-    nomor = str(row["nomor"])
-
-    return f"{tanggal}_{periode}_{nomor}".replace("/", "-")
+    # Firestore tidak membutuhkan CREATE TABLE.
+    # Collection akan dibuat otomatis saat data pertama disimpan.
+    get_db()
 
 
 def upsert_rows(rows):
-    db = _get_db()
+    db = get_db()
     changed = 0
 
     for row in rows:
-        doc_id = _document_id(row)
-        doc_ref = db.collection(COLLECTION_NAME).document(doc_id)
+        tanggal = str(row["tanggal"])
+        periode = str(row["periode"])
+        nomor = str(row["nomor"])
 
-        existing = doc_ref.get()
+        doc_id = f"{tanggal}_{periode}_{nomor}"
 
         data = {
-            "tanggal": row["tanggal"],
-            "periode": row["periode"],
-            "nomor": row["nomor"],
+            "tanggal": tanggal,
+            "periode": periode,
+            "nomor": nomor,
             "source_url": row.get("source_url"),
-            "updated_at": firestore.SERVER_TIMESTAMP,
+            "updated_at": firestore.SERVER_TIMESTAMP
         }
 
-        if not existing.exists:
-            data["created_at"] = firestore.SERVER_TIMESTAMP
+        db.collection("history").document(doc_id).set(
+            data,
+            merge=True
+        )
 
-        doc_ref.set(data, merge=True)
         changed += 1
 
     return changed
 
 
 def get_rows(page, per_page):
-    db = _get_db()
+    db = get_db()
 
     offset = (page - 1) * per_page
 
     query = (
-        db.collection(COLLECTION_NAME)
-        .order_by("created_at", direction=firestore.Query.DESCENDING)
+        db.collection("history")
+        .order_by("updated_at", direction=firestore.Query.DESCENDING)
         .limit(per_page)
     )
 
-    # Firestore tidak memakai OFFSET seperti SQLite.
-    # Untuk menjaga kompatibilitas dengan aplikasi sederhana ini,
-    # kita ambil data lalu lakukan pagination di Python.
-    all_docs = (
-        db.collection(COLLECTION_NAME)
-        .order_by("created_at", direction=firestore.Query.DESCENDING)
-        .stream()
-    )
+    # Untuk sementara ambil data lalu lakukan pagination.
+    # Cocok untuk jumlah data kecil/menengah.
+    docs = db.collection("history").stream()
 
     rows = []
 
-    for doc in all_docs:
+    for doc in docs:
         data = doc.to_dict()
 
         rows.append({
             "tanggal": data.get("tanggal"),
             "periode": data.get("periode"),
             "nomor": data.get("nomor"),
-            "source_url": data.get("source_url"),
+            "source_url": data.get("source_url")
         })
+
+    rows.sort(
+        key=lambda x: (
+            x.get("tanggal") or "",
+            x.get("periode") or ""
+        ),
+        reverse=True
+    )
 
     return rows[offset:offset + per_page]
 
 
 def count_rows():
-    db = _get_db()
+    db = get_db()
 
-    docs = db.collection(COLLECTION_NAME).stream()
+    docs = db.collection("history").stream()
+
     return sum(1 for _ in docs)
