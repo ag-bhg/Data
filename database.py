@@ -16,6 +16,7 @@ def get_firestore_db():
 
     try:
         app = firebase_admin.get_app(app_name)
+
     except ValueError:
         firebase_json = os.environ.get("FIREBASE_CREDENTIALS")
 
@@ -45,6 +46,7 @@ def get_rtdb():
 
     try:
         app = firebase_admin.get_app(app_name)
+
     except ValueError:
         firebase_json = os.environ.get(
             "FIREBASE_DTB1_CREDENTIALS"
@@ -112,15 +114,12 @@ def get_main_id(periode):
 # Pecah format data DTB1
 #
 # Contoh:
-#
 # 25-08-2026 KK-1209 6315
 # 24-08-2026 KK-1208 3278
-#
-# Hasil:
-# tanggal, periode, nomor
 # =========================================================
 
 def parse_data_entries(data_string):
+
     if not data_string:
         return []
 
@@ -130,7 +129,9 @@ def parse_data_entries(data_string):
         r"(\d{4})"
     )
 
-    return pattern.findall(str(data_string))
+    return pattern.findall(
+        str(data_string)
+    )
 
 
 # =========================================================
@@ -138,106 +139,31 @@ def parse_data_entries(data_string):
 # =========================================================
 
 def make_entry(row):
-    tanggal = str(row["tanggal"]).strip()
-    periode = str(row["periode"]).strip()
-    nomor = str(row["nomor"]).strip()
+
+    tanggal = str(
+        row["tanggal"]
+    ).strip()
+
+    periode = str(
+        row["periode"]
+    ).strip()
+
+    nomor = str(
+        row["nomor"]
+    ).strip()
 
     return f"{tanggal} {periode} {nomor}"
 
 
 # =========================================================
-# Cari node name di DTB1
-#
-# Struktur:
-#
-# savedData
-#   0
-#     name: HKL
-#     data: ...
-#
-#   1
-#     name: KK
-#     data: ...
-# =========================================================
-
-def find_dtb1_node_in_data(saved_data, main_id):
-    if not saved_data:
-        return None, None
-
-    # savedData berupa list
-    if isinstance(saved_data, list):
-
-        for index, item in enumerate(saved_data):
-
-            if not isinstance(item, dict):
-                continue
-
-            name = str(
-                item.get("name", "")
-            ).strip()
-
-            if name == main_id:
-                return index, item
-
-        return None, None
-
-    # savedData berupa dictionary
-    if isinstance(saved_data, dict):
-
-        for key, item in saved_data.items():
-
-            if not isinstance(item, dict):
-                continue
-
-            name = str(
-                item.get("name", "")
-            ).strip()
-
-            if name == main_id:
-                return key, item
-
-    return None, None
-
-
-# =========================================================
-# Cari index baru tanpa merusak struktur savedData
-# =========================================================
-
-def get_next_saved_data_index(saved_data):
-
-    if not saved_data:
-        return 0
-
-    if isinstance(saved_data, list):
-        return len(saved_data)
-
-    if isinstance(saved_data, dict):
-
-        numeric_keys = []
-
-        for key in saved_data.keys():
-
-            try:
-                numeric_keys.append(int(key))
-            except (ValueError, TypeError):
-                pass
-
-        if not numeric_keys:
-            return 0
-
-        return max(numeric_keys) + 1
-
-    return 0
-
-
-# =========================================================
 # UPDATE DTB1
 #
-# Menggunakan transaction agar:
-# - dua proses bersamaan tidak saling menimpa
-# - duplikat tidak masuk
-# - duplikat lama dapat dibersihkan
-# - struktur savedData lama tetap dipertahankan
+# Tujuan:
+# - Tidak membuat ID utama ganda
+# - Tidak menambahkan data yang sama
+# - Membersihkan duplikat lama
+# - Mempertahankan field settings
+# - Menyimpan savedData sekali
 # =========================================================
 
 def sync_to_dtb1(rows):
@@ -250,7 +176,7 @@ def sync_to_dtb1(rows):
     created = 0
 
     # =====================================================
-    # DEDUPLIKASI DATA YANG DATANG DARI DTB2
+    # HILANGKAN DUPLIKAT DARI DATA YANG MASUK
     # =====================================================
 
     unique_rows = {}
@@ -278,207 +204,238 @@ def sync_to_dtb1(rows):
         if key not in unique_rows:
             unique_rows[key] = row
 
-    rows = list(unique_rows.values())
-
-    if not rows:
-        return {
-            "changed": 0,
-            "created": 0,
-            "skipped": 0
-        }
+    rows = list(
+        unique_rows.values()
+    )
 
     # =====================================================
-    # TRANSACTION
-    #
-    # Firebase akan membaca data terbaru setiap kali
-    # transaction perlu diulang.
+    # AMBIL savedData SEKALI
     # =====================================================
 
-    def transaction_update(saved_data):
+    saved_data = saved_ref.get()
 
-        nonlocal changed
-        nonlocal skipped
-        nonlocal created
+    if not saved_data:
+        saved_data = []
 
-        if saved_data is None:
-            saved_data = []
+    # =====================================================
+    # NORMALISASI savedData
+    # =====================================================
 
-        # Pastikan tipe tetap sama.
-        if not isinstance(saved_data, (list, dict)):
-            return saved_data
+    if isinstance(saved_data, dict):
+
+        ordered = []
+
+        for key, item in saved_data.items():
+
+            if isinstance(item, dict):
+
+                ordered.append(
+                    (key, item)
+                )
+
+        ordered.sort(
+            key=lambda x:
+                int(x[0])
+                if str(x[0]).isdigit()
+                else 999999999
+        )
+
+        saved_data = [
+            item
+            for _, item in ordered
+        ]
+
+    elif not isinstance(saved_data, list):
+
+        saved_data = []
+
+    # =====================================================
+    # PROSES DATA
+    # =====================================================
+
+    for row in rows:
+
+        tanggal = str(
+            row["tanggal"]
+        ).strip()
+
+        periode = str(
+            row["periode"]
+        ).strip()
+
+        nomor = str(
+            row["nomor"]
+        ).strip()
+
+        main_id = get_main_id(
+            periode
+        )
+
+        new_entry = make_entry(
+            row
+        )
 
         # =================================================
-        # PROSES SEMUA ROW DI DALAM SATU TRANSACTION
+        # CARI ID UTAMA
         # =================================================
 
-        for row in rows:
+        node_index = None
 
-            tanggal = str(
-                row["tanggal"]
-            ).strip()
+        for index, item in enumerate(
+            saved_data
+        ):
 
-            periode = str(
-                row["periode"]
-            ).strip()
-
-            nomor = str(
-                row["nomor"]
-            ).strip()
-
-            main_id = get_main_id(periode)
-
-            new_entry = make_entry(row)
-
-            # =============================================
-            # CARI ID UTAMA
-            # =============================================
-
-            node_key, existing = find_dtb1_node_in_data(
-                saved_data,
-                main_id
-            )
-
-            # =============================================
-            # ID BELUM ADA
-            # =============================================
-
-            if node_key is None:
-
-                new_item = {
-                    "data": new_entry,
-                    "name": main_id,
-                    "savedAt": current_saved_at()
-                }
-
-                # savedData berupa LIST
-                if isinstance(saved_data, list):
-
-                    saved_data.append(new_item)
-
-                # savedData berupa DICTIONARY
-                elif isinstance(saved_data, dict):
-
-                    next_index = get_next_saved_data_index(
-                        saved_data
-                    )
-
-                    saved_data[str(next_index)] = new_item
-
-                created += 1
-                changed += 1
-
+            if not isinstance(item, dict):
                 continue
 
-            # =============================================
-            # ID SUDAH ADA
-            # =============================================
-
-            old_data = str(
-                existing.get("data", "")
+            name = str(
+                item.get("name", "")
             ).strip()
 
-            old_entries = parse_data_entries(
-                old_data
-            )
+            if name == main_id:
 
-            # =============================================
-            # BERSIHKAN DUPLIKAT LAMA
-            # =============================================
+                node_index = index
+                break
 
-            unique_entries = []
-            seen = set()
+        # =================================================
+        # ID BELUM ADA
+        # =================================================
 
-            for (
+        if node_index is None:
+
+            saved_data.append({
+
+                "data": new_entry,
+
+                "name": main_id,
+
+                "savedAt":
+                    current_saved_at()
+
+            })
+
+            created += 1
+            changed += 1
+
+            continue
+
+        # =================================================
+        # ID SUDAH ADA
+        # =================================================
+
+        item = saved_data[
+            node_index
+        ]
+
+        old_data = str(
+            item.get("data", "")
+        ).strip()
+
+        # =================================================
+        # PECAH DATA LAMA
+        # =================================================
+
+        old_entries = parse_data_entries(
+            old_data
+        )
+
+        unique_entries = []
+        seen = set()
+
+        # =================================================
+        # BERSIHKAN DUPLIKAT LAMA
+        # =================================================
+
+        for (
+            old_tanggal,
+            old_periode,
+            old_nomor
+        ) in old_entries:
+
+            key = (
                 old_tanggal,
                 old_periode,
                 old_nomor
-            ) in old_entries:
-
-                entry_key = (
-                    old_tanggal,
-                    old_periode,
-                    old_nomor
-                )
-
-                if entry_key in seen:
-                    continue
-
-                seen.add(entry_key)
-
-                unique_entries.append(
-                    f"{old_tanggal} "
-                    f"{old_periode} "
-                    f"{old_nomor}"
-                )
-
-            # =============================================
-            # CEK DATA BARU
-            # =============================================
-
-            new_key = (
-                tanggal,
-                periode,
-                nomor
             )
 
-            if new_key not in seen:
-
-                # Data baru selalu berada di depan
-                unique_entries.insert(
-                    0,
-                    new_entry
-                )
-
-                seen.add(new_key)
-
-            # =============================================
-            # SUSUN KEMBALI
-            # =============================================
-
-            new_data = " ".join(
-                unique_entries
-            )
-
-            # =============================================
-            # UPDATE HANYA JIKA ADA PERUBAHAN
-            # =============================================
-
-            if new_data == old_data:
-
-                skipped += 1
+            if key in seen:
                 continue
 
-            # =============================================
-            # PERTAHANKAN FIELD LAIN
-            # =============================================
+            seen.add(key)
 
-            existing["data"] = new_data
-            existing["name"] = main_id
-            existing["savedAt"] = current_saved_at()
+            unique_entries.append(
+                f"{old_tanggal} "
+                f"{old_periode} "
+                f"{old_nomor}"
+            )
 
-            # =============================================
-            # SIMPAN KEMBALI KE NODE YANG SAMA
-            # =============================================
+        # =================================================
+        # DATA BARU
+        # =================================================
 
-            if isinstance(saved_data, list):
+        new_key = (
+            tanggal,
+            periode,
+            nomor
+        )
 
-                saved_data[node_key] = existing
+        if new_key not in seen:
 
-            elif isinstance(saved_data, dict):
+            unique_entries.insert(
+                0,
+                new_entry
+            )
 
-                saved_data[str(node_key)] = existing
+            seen.add(
+                new_key
+            )
 
-            changed += 1
+        # =================================================
+        # SUSUN DATA
+        # =================================================
 
-        return saved_data
+        new_data = " ".join(
+            unique_entries
+        )
+
+        # =================================================
+        # TIDAK ADA PERUBAHAN
+        # =================================================
+
+        if new_data == old_data:
+
+            skipped += 1
+            continue
+
+        # =================================================
+        # UPDATE
+        #
+        # Jangan mengganti settings.
+        # Kita hanya mengubah:
+        # data
+        # name
+        # savedAt
+        # =================================================
+
+        item["data"] = new_data
+
+        item["name"] = main_id
+
+        item["savedAt"] = (
+            current_saved_at()
+        )
+
+        changed += 1
 
     # =====================================================
-    # JALANKAN TRANSACTION
+    # SIMPAN SEKALI SAJA
     # =====================================================
 
-    saved_ref.transaction(
-        transaction_update
-    )
+    if changed > 0:
+
+        saved_ref.set(
+            saved_data
+        )
 
     return {
         "changed": changed,
@@ -489,16 +446,57 @@ def sync_to_dtb1(rows):
 
 # =========================================================
 # SIMPAN DTB2 + SINKRON KE DTB1
+#
+# PENTING:
+#
+# Nilai return sekarang berdasarkan perubahan nyata
+# di Firestore.
+#
+# Bukan berdasarkan perubahan DTB1.
 # =========================================================
 
 def upsert_rows(rows):
 
     db = get_firestore_db()
 
-    changed = 0
+    firestore_changed = 0
 
     # =====================================================
-    # 1. SIMPAN KE DTB2
+    # HILANGKAN DUPLIKAT DATA MASUK
+    # =====================================================
+
+    unique_rows = {}
+
+    for row in rows:
+
+        tanggal = str(
+            row["tanggal"]
+        ).strip()
+
+        periode = str(
+            row["periode"]
+        ).strip()
+
+        nomor = str(
+            row["nomor"]
+        ).strip()
+
+        key = (
+            tanggal,
+            periode,
+            nomor
+        )
+
+        if key not in unique_rows:
+
+            unique_rows[key] = row
+
+    rows = list(
+        unique_rows.values()
+    )
+
+    # =====================================================
+    # SIMPAN KE FIRESTORE
     # =====================================================
 
     for row in rows:
@@ -521,32 +519,121 @@ def upsert_rows(rows):
             f"{nomor}"
         )
 
-        data = {
+        doc_ref = (
+            db.collection("history")
+            .document(doc_id)
+        )
+
+        # =================================================
+        # CEK DATA SUDAH ADA ATAU BELUM
+        # =================================================
+
+        existing_doc = doc_ref.get()
+
+        new_data = {
             "tanggal": tanggal,
             "periode": periode,
             "nomor": nomor,
-            "source_url": row.get("source_url"),
-            "updated_at": firestore.SERVER_TIMESTAMP
+            "source_url":
+                row.get("source_url")
         }
 
-        db.collection(
-            "history"
-        ).document(
-            doc_id
-        ).set(
-            data,
+        # =================================================
+        # DOKUMEN BARU
+        # =================================================
+
+        if not existing_doc.exists:
+
+            new_data[
+                "updated_at"
+            ] = firestore.SERVER_TIMESTAMP
+
+            doc_ref.set(
+                new_data,
+                merge=True
+            )
+
+            firestore_changed += 1
+
+            continue
+
+        # =================================================
+        # DOKUMEN SUDAH ADA
+        #
+        # Jangan menganggapnya data baru.
+        # updated_at tidak dipakai untuk menentukan
+        # apakah data berubah.
+        # =================================================
+
+        old = existing_doc.to_dict() or {}
+
+        data_changed = (
+
+            str(
+                old.get("tanggal", "")
+            ).strip()
+            != tanggal
+
+            or
+
+            str(
+                old.get("periode", "")
+            ).strip()
+            != periode
+
+            or
+
+            str(
+                old.get("nomor", "")
+            ).strip()
+            != nomor
+
+            or
+
+            old.get("source_url")
+            != row.get("source_url")
+        )
+
+        if not data_changed:
+
+            continue
+
+        # =================================================
+        # DATA MEMANG BERUBAH
+        # =================================================
+
+        new_data[
+            "updated_at"
+        ] = firestore.SERVER_TIMESTAMP
+
+        doc_ref.set(
+            new_data,
             merge=True
         )
 
-        changed += 1
+        firestore_changed += 1
 
     # =====================================================
-    # 2. SINKRON DTB2 → DTB1
+    # SINKRON KE DTB1
+    #
+    # Tetap dilakukan walaupun Firestore tidak bertambah,
+    # karena DTB1 bisa saja perlu dibersihkan/disinkronkan.
     # =====================================================
 
-    result = sync_to_dtb1(rows)
+    sync_to_dtb1(
+        rows
+    )
 
-    return result["changed"]
+    # =====================================================
+    # PENTING:
+    #
+    # Yang dikembalikan ke app.py adalah jumlah perubahan
+    # NYATA di Firestore.
+    #
+    # Bukan jumlah perubahan DTB1.
+    # =====================================================
+
+    return firestore_changed
 
 
 # =========================================================
@@ -556,6 +643,7 @@ def upsert_rows(rows):
 def init_db():
 
     get_firestore_db()
+
     get_rtdb()
 
 
@@ -571,9 +659,10 @@ def get_rows(page, per_page):
         page - 1
     ) * per_page
 
-    docs = db.collection(
-        "history"
-    ).stream()
+    docs = (
+        db.collection("history")
+        .stream()
+    )
 
     rows = []
 
@@ -582,17 +671,37 @@ def get_rows(page, per_page):
         data = doc.to_dict()
 
         rows.append({
-            "tanggal": data.get("tanggal"),
-            "periode": data.get("periode"),
-            "nomor": data.get("nomor"),
-            "source_url": data.get("source_url")
+
+            "tanggal":
+                data.get("tanggal"),
+
+            "periode":
+                data.get("periode"),
+
+            "nomor":
+                data.get("nomor"),
+
+            "source_url":
+                data.get("source_url")
+
         })
 
+    # =====================================================
+    # URUTKAN DATA TERBARU DI ATAS
+    # =====================================================
+
     rows.sort(
+
         key=lambda x: (
-            x.get("tanggal") or "",
-            x.get("periode") or ""
+
+            x.get("tanggal")
+            or "",
+
+            x.get("periode")
+            or ""
+
         ),
+
         reverse=True
     )
 
@@ -610,10 +719,12 @@ def count_rows():
 
     db = get_firestore_db()
 
-    docs = db.collection(
-        "history"
-    ).stream()
+    docs = (
+        db.collection("history")
+        .stream()
+    )
 
     return sum(
-        1 for _ in docs
+        1
+        for _ in docs
     )
