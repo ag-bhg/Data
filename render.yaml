@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: draw-history-demo
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
