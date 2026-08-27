@@ -61,29 +61,38 @@ def find_page_links(html, current_url):
             links.append((int(text), href))
     return sorted(set(links))
 
-def sync_history():
+def sync_history(max_pages=300):
     from database import upsert_rows
 
-    html, final_url = fetch(SOURCE_URL)
-    all_rows = parse_table(html, final_url)
+    # Halaman 1 adalah URL dasar; halaman berikutnya memakai ?page=N.
+    # Untuk histori awal, proses maksimal 300 halaman.
+    all_rows = []
 
-    # Ambil seluruh halaman pagination yang tersedia.
-    page_links = find_page_links(html, final_url)
-    seen_urls = {final_url}
+    for page_no in range(1, max_pages + 1):
+        if page_no == 1:
+            page_url = SOURCE_URL
+        else:
+            page_url = f"{SOURCE_URL}?page={page_no}"
 
-    for page_no, page_url in page_links:
-        if page_url in seen_urls:
-            continue
+        try:
+            html, final_url = fetch(page_url)
+        except requests.RequestException:
+            # Hentikan proses bila pagination tidak lagi dapat diakses.
+            break
 
-        seen_urls.add(page_url)
-        page_html, page_final_url = fetch(page_url)
-        page_rows = parse_table(page_html, page_final_url)
+        page_rows = parse_table(html, final_url)
 
+        # Jika halaman tidak lagi menghasilkan data, anggap sudah
+        # mencapai akhir data yang tersedia.
         if not page_rows:
-            continue
+            break
 
         all_rows.extend(page_rows)
 
-    # Hilangkan duplikat dalam satu batch.
-    unique = {(r["tanggal"], r["periode"], r["nomor"]): r for r in all_rows}
+    # Hilangkan duplikat dalam satu batch berdasarkan identitas data.
+    unique = {
+        (r["tanggal"], r["periode"], r["nomor"]): r
+        for r in all_rows
+    }
+
     return upsert_rows(list(unique.values()))
