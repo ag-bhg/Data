@@ -1,7 +1,7 @@
 import sqlite3
 from pathlib import Path
 
-DB_PATH = Path(__file__).with_name("history.db")
+DB_PATH = "/tmp/data.db"
 
 def connect():
     conn = sqlite3.connect(DB_PATH)
