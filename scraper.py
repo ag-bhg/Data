@@ -61,19 +61,28 @@ def find_page_links(html, current_url):
             links.append((int(text), href))
     return sorted(set(links))
 
-def sync_history(max_pages=10):
+def sync_history():
     from database import upsert_rows
 
     html, final_url = fetch(SOURCE_URL)
     all_rows = parse_table(html, final_url)
 
-    # Ambil beberapa halaman awal untuk demo.
+    # Ambil seluruh halaman pagination yang tersedia.
     page_links = find_page_links(html, final_url)
+    seen_urls = {final_url}
+
     for page_no, page_url in page_links:
-        if page_no == 1 or page_no > max_pages:
+        if page_url in seen_urls:
             continue
+
+        seen_urls.add(page_url)
         page_html, page_final_url = fetch(page_url)
-        all_rows.extend(parse_table(page_html, page_final_url))
+        page_rows = parse_table(page_html, page_final_url)
+
+        if not page_rows:
+            continue
+
+        all_rows.extend(page_rows)
 
     # Hilangkan duplikat dalam satu batch.
     unique = {(r["tanggal"], r["periode"], r["nomor"]): r for r in all_rows}
