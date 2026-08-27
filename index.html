@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Draw History — Demo Lokal</title>
+  <style>
+    body{font-family:system-ui,sans-serif;max-width:1000px;margin:40px auto;padding:0 16px;background:#f5f5f5;color:#222}
+    .card{background:#fff;border-radius:12px;padding:20px;box-shadow:0 2px 10px #0001}
+    button{padding:10px 16px;border:0;border-radius:8px;cursor:pointer}
+    table{width:100%;border-collapse:collapse;margin-top:16px}
+    th,td{text-align:left;padding:10px;border-bottom:1px solid #ddd}
+    th{background:#f0f0f0}
+    .pager{display:flex;gap:8px;margin-top:18px;flex-wrap:wrap}
+    .pager a{padding:7px 11px;background:#eee;border-radius:7px;text-decoration:none;color:#222}
+    .msg{padding:10px;border-radius:8px;margin:10px 0}
+    .success{background:#e7f7e7}.error{background:#fde8e8}
+    small{color:#666}
+  </style>
+</head>
+<body>
+<div class="card">
+  <h1>Draw History — Demo Lokal</h1>
+  <p><small>Total data tersimpan: {{ total }}</small></p>
+
+  <form method="post" action="{{ url_for('sync') }}">
+    <button type="submit">Update Data</button>
+  </form>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+      <div class="msg {{ category }}">{{ message }}</div>
+    {% endfor %}
+  {% endwith %}
+
+  <table>
+    <thead><tr><th>Tanggal</th><th>Periode</th><th>Nomor</th></tr></thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td>{{ row["tanggal"] }}</td>
+        <td>{{ row["periode"] }}</td>
+        <td>{{ row["nomor"] }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="3">Belum ada data. Klik Update Data.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <div class="pager">
+    {% if page > 1 %}<a href="?page={{ page-1 }}">← Sebelumnya</a>{% endif %}
+    <span>Halaman {{ page }} / {{ pages }}</span>
+    {% if page < pages %}<a href="?page={{ page+1 }}">Berikutnya →</a>{% endif %}
+  </div>
+</div>
+</body>
+</html>
