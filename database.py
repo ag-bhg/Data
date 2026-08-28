@@ -156,6 +156,13 @@ def get_rows(page, per_page):
     offset + limit) sehingga hanya dokumen yang benar-benar
     ditampilkan yang dibaca (plus dokumen yang dilewati offset,
     jauh lebih sedikit dibanding seluruh koleksi).
+
+    Diurutkan berdasarkan sort_key (tanggal draw + periode) — ini
+    yang dipakai fitur backend (catch-up sync, deteksi gap nomor
+    urut, dll) yang memang butuh urutan kronologis draw, BUKAN
+    kapan datanya disimpan. Untuk tampilan "Draw History" di
+    halaman utama, pakai get_rows_by_recency() di bawah supaya
+    tidak keurut alfabet nama pasaran waktu tanggalnya sama.
     """
 
     db = get_firestore_db()
@@ -165,6 +172,45 @@ def get_rows(page, per_page):
     query = (
         db.collection("history")
         .order_by("sort_key", direction=firestore.Query.DESCENDING)
+        .offset(offset)
+        .limit(per_page)
+    )
+
+    rows = []
+
+    for doc in query.stream():
+        data = doc.to_dict()
+
+        rows.append({
+            "tanggal": data.get("tanggal"),
+            "periode": data.get("periode"),
+            "nomor": data.get("nomor"),
+            "source_url": data.get("source_url"),
+        })
+
+    return rows
+
+
+def get_rows_by_recency(page, per_page):
+    """
+    Sama seperti get_rows(), tapi diurutkan berdasarkan
+    `updated_at` (timestamp asli Firestore, saat dokumen terakhir
+    ditulis/disentuh), bukan sort_key (tanggal draw + periode).
+
+    Dipakai KHUSUS untuk halaman "Draw History" di "/" supaya
+    baris yang benar-benar baru disinkronkan tampil paling atas —
+    sebelumnya, karena banyak draw share tanggal yang sama,
+    urutan sort_key jatuh ke teks periode (alfabet nama pasaran),
+    bukan urutan waktu sebenarnya.
+    """
+
+    db = get_firestore_db()
+
+    offset = (page - 1) * per_page
+
+    query = (
+        db.collection("history")
+        .order_by("updated_at", direction=firestore.Query.DESCENDING)
         .offset(offset)
         .limit(per_page)
     )
