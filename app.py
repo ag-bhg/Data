@@ -291,11 +291,28 @@ def api_nomor():
 
         numbers = [r["nomor"] for r in raw_rows if r.get("nomor")]
 
+        # BARU: sertakan tanggal + periode (Id+No Urut) per baris, bukan
+        # cuma nomor keluaran polos. SL (indexne.html) sebelumnya membaca
+        # data 3 kolom "Tanggal - Id+NoUrut - Nomor" (lihat fungsi
+        # parseData/quickInputBtn di sana) — kalau cuma dikirim "numbers"
+        # saja, SL kehilangan tanggal+periode dan sebagian fiturnya (nomor
+        # urut otomatis, deteksi gap) jadi error/salah baca. "numbers"
+        # tetap disertakan untuk kompatibilitas lama.
+        rows_out = [
+            {
+                "tanggal": r.get("tanggal"),
+                "periode": r.get("periode"),
+                "nomor": r.get("nomor"),
+            }
+            for r in raw_rows if r.get("nomor")
+        ]
+
         resp = jsonify({
             "ok": True,
             "count": len(numbers),
             "kode": kode or None,
-            "numbers": numbers
+            "numbers": numbers,
+            "rows": rows_out
         })
 
     except Exception as exc:
@@ -327,18 +344,18 @@ def api_nomor_semua():
     limit = request.args.get("limit", 500, type=int)
     limit = max(1, min(limit, 5000))
 
-    # ?full=1 dipakai tombol "Update Master" di indexne.html untuk
-    # baca SELURUH koleksi (bukan cuma window `scan`). Cuma dipakai
-    # sesekali (dilindungi PIN di sisi client) — bukan untuk update
-    # rutin harian, karena biaya read-nya jauh lebih besar.
+    # ?full=1 dipakai tombol "Update Master" di indexne.html.
+    # SENGAJA dibatasi ke MASTER_SCAN_CAP (bukan literal seluruh
+    # koleksi) — kalau ikut total koleksi, biayanya akan terus
+    # membengkak seiring waktu (koleksi terus bertambah tiap hari).
+    # 2000 dokumen masih jauh lebih dari cukup untuk menambal gap
+    # yang realistis (~20 hari di kecepatan ~100 data/hari), dan
+    # aman dipakai harian kalau perlu (Firestore limit reads 50K/hari).
     full = request.args.get("full", "0") == "1"
+    MASTER_SCAN_CAP = 2000
 
     if full:
-        try:
-            total = count_rows()
-        except Exception:
-            total = 20000
-        scan = max(1, min(total, 20000))
+        scan = MASTER_SCAN_CAP
     else:
         scan = request.args.get("scan", 700, type=int)
         scan = max(1, min(scan, 3000))
@@ -353,6 +370,7 @@ def api_nomor_semua():
             periode = r.get("periode")
             kode = extract_kode_pasaran(periode)
             nomor = r.get("nomor")
+            tanggal = r.get("tanggal")
             urutan = extract_urutan_pasaran(periode)
 
             if not kode or not nomor:
@@ -360,7 +378,16 @@ def api_nomor_semua():
 
             bucket = grouped.setdefault(kode, [])
             if len(bucket) < limit:
-                bucket.append(nomor)
+                # BARU: simpan objek {tanggal, periode, nomor}, bukan
+                # cuma nomor polos, supaya SL bisa menyimpan &
+                # menampilkan format "Tgl - Id+NoUrut - Nomor" seperti
+                # yang dibaca SL sebelumnya (lihat catatan di /api/nomor
+                # di atas untuk alasan lengkapnya).
+                bucket.append({
+                    "tanggal": tanggal,
+                    "periode": periode,
+                    "nomor": nomor,
+                })
 
             if urutan is not None:
                 urutan_sets.setdefault(kode, set()).add(urutan)
