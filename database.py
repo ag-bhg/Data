@@ -37,11 +37,14 @@ def get_firestore_db():
     return firestore.client(app=app)
 
 
-def _sort_key(tanggal, periode):
+def compute_sort_key(tanggal, periode):
     """
     Bikin string yang bisa diurutkan langsung oleh Firestore
     (order_by), karena "tanggal" disimpan dalam format
     dd-mm-yyyy yang urutan aslinya tidak kronologis.
+
+    Dipakai juga oleh scraper.py untuk logika "catch-up" sync
+    (lihat get_max_sort_key di bawah).
     """
     tanggal = str(tanggal or "").strip()
     periode = str(periode or "").strip()
@@ -118,7 +121,7 @@ def upsert_rows(rows):
             "periode": periode,
             "nomor": nomor,
             "source_url": row.get("source_url"),
-            "sort_key": _sort_key(tanggal, periode),
+            "sort_key": compute_sort_key(tanggal, periode),
             "updated_at": firestore.SERVER_TIMESTAMP,
         }
 
@@ -196,6 +199,34 @@ def count_rows():
     return result[0][0].value
 
 
+def get_max_sort_key():
+    """
+    Ambil sort_key TERBESAR (data terbaru) yang sudah tersimpan.
+    Dipakai scraper.py untuk tahu kapan proses sync boleh berhenti:
+    begitu halaman yang di-scrape isinya sudah <= nilai ini semua,
+    berarti sudah "mengejar" sampai data yang sudah pernah
+    tersimpan sebelumnya -> tidak ada data yang terlewat walau
+    sudah lama tidak sync.
+
+    Cuma 1 read (limit 1), bukan baca seluruh koleksi.
+    Return None kalau koleksi masih kosong.
+    """
+
+    db = get_firestore_db()
+
+    query = (
+        db.collection("history")
+        .order_by("sort_key", direction=firestore.Query.DESCENDING)
+        .limit(1)
+    )
+
+    for doc in query.stream():
+        data = doc.to_dict() or {}
+        return data.get("sort_key")
+
+    return None
+
+
 def migrate_sort_keys(batch_size=400):
     """
     JALANKAN SEKALI SAJA setelah deploy versi ini, untuk mengisi
@@ -222,7 +253,7 @@ def migrate_sort_keys(batch_size=400):
         if "sort_key" in data:
             continue
 
-        key = _sort_key(data.get("tanggal"), data.get("periode"))
+        key = compute_sort_key(data.get("tanggal"), data.get("periode"))
         batch.set(doc.reference, {"sort_key": key}, merge=True)
 
         batch_count += 1
