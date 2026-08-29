@@ -4,6 +4,7 @@ import re
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
 from scraper import sync_history
 from database import init_db, get_rows, get_rows_by_recency, count_rows, migrate_sort_keys
+import sl_engine as engine
 
 app = Flask(__name__)
 app.secret_key = "local-demo-only-change-me"
@@ -291,28 +292,11 @@ def api_nomor():
 
         numbers = [r["nomor"] for r in raw_rows if r.get("nomor")]
 
-        # BARU: sertakan tanggal + periode (Id+No Urut) per baris, bukan
-        # cuma nomor keluaran polos. SL (indexne.html) sebelumnya membaca
-        # data 3 kolom "Tanggal - Id+NoUrut - Nomor" (lihat fungsi
-        # parseData/quickInputBtn di sana) — kalau cuma dikirim "numbers"
-        # saja, SL kehilangan tanggal+periode dan sebagian fiturnya (nomor
-        # urut otomatis, deteksi gap) jadi error/salah baca. "numbers"
-        # tetap disertakan untuk kompatibilitas lama.
-        rows_out = [
-            {
-                "tanggal": r.get("tanggal"),
-                "periode": r.get("periode"),
-                "nomor": r.get("nomor"),
-            }
-            for r in raw_rows if r.get("nomor")
-        ]
-
         resp = jsonify({
             "ok": True,
             "count": len(numbers),
             "kode": kode or None,
-            "numbers": numbers,
-            "rows": rows_out
+            "numbers": numbers
         })
 
     except Exception as exc:
@@ -370,7 +354,6 @@ def api_nomor_semua():
             periode = r.get("periode")
             kode = extract_kode_pasaran(periode)
             nomor = r.get("nomor")
-            tanggal = r.get("tanggal")
             urutan = extract_urutan_pasaran(periode)
 
             if not kode or not nomor:
@@ -378,16 +361,7 @@ def api_nomor_semua():
 
             bucket = grouped.setdefault(kode, [])
             if len(bucket) < limit:
-                # BARU: simpan objek {tanggal, periode, nomor}, bukan
-                # cuma nomor polos, supaya SL bisa menyimpan &
-                # menampilkan format "Tgl - Id+NoUrut - Nomor" seperti
-                # yang dibaca SL sebelumnya (lihat catatan di /api/nomor
-                # di atas untuk alasan lengkapnya).
-                bucket.append({
-                    "tanggal": tanggal,
-                    "periode": periode,
-                    "nomor": nomor,
-                })
+                bucket.append(nomor)
 
             if urutan is not None:
                 urutan_sets.setdefault(kode, set()).add(urutan)
@@ -427,6 +401,92 @@ def api_nomor_semua():
             "error": str(exc)
         })
 
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+
+    return resp
+
+
+# =========================================================
+# ANALISA (untuk bot Telegram) — port Python dari logika SL,
+# lihat sl_engine.py. Jenis yang didukung: js, ai, shio, bbfs, formulax.
+# =========================================================
+
+def _get_used_numbers(kode, scan_limit=2500):
+    """Ambil nomor (bare, newest-first) 1 pasaran dari Firestore — sama seperti /api/nomor."""
+    raw_rows = get_rows(1, scan_limit)
+    filtered = [
+        r for r in raw_rows
+        if extract_kode_pasaran(r.get("periode")).lower() == kode.lower()
+    ]
+    return [r["nomor"] for r in filtered if r.get("nomor")]
+
+
+@app.get("/api/analisa/<jenis>")
+def api_analisa(jenis):
+    kode = request.args.get("kode", "").strip()
+    if not kode:
+        return jsonify({"ok": False, "error": "Parameter 'kode' wajib diisi."}), 400
+
+    window = request.args.get("window", 30, type=int)
+    window = max(5, min(window, 200))
+    n = request.args.get("n", 6, type=int)
+
+    try:
+        used = _get_used_numbers(kode)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+    if len(used) < window:
+        return jsonify({
+            "ok": False,
+            "error": f"Data '{kode}' cuma {len(used)}, butuh minimal {window} (window)."
+        })
+
+    try:
+        if jenis == "js":
+            sub = used[:window]
+            rows = []
+            for num in sub:
+                jumlah_list, selisih_list = engine.jumlah_selisih_list(num)
+                rows.append({"num": num, "jumlahList": jumlah_list, "selisihList": selisih_list})
+            data = {
+                "jumlah": engine.best_cover_js_part(rows, "jumlahList", n),
+                "selisih": engine.best_cover_js_part(rows, "selisihList", n),
+            }
+
+        elif jenis == "ai":
+            sub = used[:window]
+            data = {k: engine.best_cover_ai_part(sub, k, n) for k in ("AC", "CK", "KE")}
+
+        elif jenis == "shio":
+            sub = used[:window]
+            data = {"shio": engine.best_cover_shio_gabungan(sub, n)}
+
+        elif jenis == "bbfs":
+            sub = used[:window]
+            data = {"bbfs": engine.best_cover_bbfs(sub, n)}
+
+        elif jenis == "formulax":
+            target_len = len(used[0])
+            pos_labels = engine.pos_labels_for_length(target_len)
+            recs = engine.compute_formula_x(used, pos_labels, control_n=10, trend_n=30)
+            data = {label: arr[:3] for label, arr in recs.items()}
+
+        else:
+            return jsonify({"ok": False, "error": f"Jenis '{jenis}' tidak dikenal."}), 400
+
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+    resp = jsonify({
+        "ok": True,
+        "kode": kode,
+        "jenis": jenis,
+        "window": window,
+        "n": n,
+        "count": len(used),
+        "data": data,
+    })
     resp.headers["Access-Control-Allow-Origin"] = "*"
 
     return resp
