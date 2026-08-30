@@ -291,12 +291,21 @@ def api_nomor():
             raw_rows = get_rows(1, limit)
 
         numbers = [r["nomor"] for r in raw_rows if r.get("nomor")]
+        rows = [
+            {
+                "tanggal": r.get("tanggal"),
+                "periode": r.get("periode"),
+                "nomor": r.get("nomor"),
+            }
+            for r in raw_rows if r.get("nomor")
+        ]
 
         resp = jsonify({
             "ok": True,
             "count": len(numbers),
             "kode": kode or None,
-            "numbers": numbers
+            "numbers": numbers,  # dipertahankan untuk kompatibilitas mundur
+            "rows": rows         # dipakai SL sekarang: format Tanggal + Periode + Nomor
         })
 
     except Exception as exc:
@@ -361,7 +370,14 @@ def api_nomor_semua():
 
             bucket = grouped.setdefault(kode, [])
             if len(bucket) < limit:
-                bucket.append(nomor)
+                # Objek lengkap (bukan nomor polos) — SL (index.html) sekarang
+                # baca field ini lewat matchRows.map(r => ({tanggal, periode, nomor, ...}))
+                # di fungsi runServerUpdate.
+                bucket.append({
+                    "tanggal": r.get("tanggal"),
+                    "periode": periode,
+                    "nomor": nomor,
+                })
 
             if urutan is not None:
                 urutan_sets.setdefault(kode, set()).add(urutan)
