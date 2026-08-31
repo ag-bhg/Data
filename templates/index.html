@@ -16,6 +16,14 @@
     .msg{padding:10px;border-radius:8px;margin:10px 0}
     .success{background:#e7f7e7}.error{background:#fde8e8}
     small{color:#666}
+    .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
+    .btn-update{background:#2563eb;color:#fff}
+    .btn-refresh{background:#e5e7eb;color:#222}
+    button:disabled{opacity:.6;cursor:not-allowed}
+    .spinner{display:none;align-items:center;gap:8px;margin-top:10px;color:#555}
+    .spinner.show{display:flex}
+    .spinner .dot{width:14px;height:14px;border:2px solid #ccc;border-top-color:#2563eb;border-radius:50%;animation:spin .7s linear infinite}
+    @keyframes spin{to{transform:rotate(360deg)}}
   </style>
 </head>
 <body>
@@ -28,6 +36,14 @@
       <div class="msg {{ category }}">{{ message }}</div>
     {% endfor %}
   {% endwith %}
+
+  <div id="jsMsg"></div>
+
+  <div class="actions">
+    <button id="btnUpdate" class="btn-update" onclick="jalankanUpdateManual()">🔄 Update Data Manual</button>
+    <button id="btnRefresh" class="btn-refresh" onclick="location.reload()">↻ Refresh Tampilan</button>
+  </div>
+  <div class="spinner" id="spinner"><span class="dot"></span> Sedang membaca 30 halaman dari sumber, mohon tunggu...</div>
 
   <table>
     <thead><tr><th>Tanggal</th><th>Periode</th><th>Nomor</th></tr></thead>
@@ -50,5 +66,57 @@
     {% if page < pages %}<a href="?page={{ page+1 }}">Berikutnya →</a>{% endif %}
   </div>
 </div>
+
+<script>
+async function jalankanUpdateManual() {
+  const kode = prompt("Masukkan kode pengaman untuk update manual:");
+  if (kode === null) return; // dibatalkan
+
+  if (kode !== "13579") {
+    tampilkanPesan("Kode pengaman salah. Update dibatalkan.", "error");
+    return;
+  }
+
+  const btnUpdate = document.getElementById("btnUpdate");
+  const btnRefresh = document.getElementById("btnRefresh");
+  const spinner = document.getElementById("spinner");
+
+  btnUpdate.disabled = true;
+  btnRefresh.disabled = true;
+  spinner.classList.add("show");
+  tampilkanPesan("", "");
+
+  try {
+    const res = await fetch("/api/manual-sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kode })
+    });
+    const data = await res.json();
+
+    if (data.ok) {
+      tampilkanPesan(
+        `Update selesai. Halaman dibaca: ${data.pages_scanned}, data baru: ${data.new_rows}, tersimpan/berubah: ${data.changed}${data.caught_up ? " (sudah mengejar sampai data lama)" : " (masih ada gap, ulangi jika perlu)"}.`,
+        "success"
+      );
+      setTimeout(() => location.reload(), 1200);
+    } else {
+      tampilkanPesan("Gagal update: " + (data.error || "unknown error"), "error");
+    }
+  } catch (err) {
+    tampilkanPesan("Gagal menghubungi server: " + err, "error");
+  } finally {
+    btnUpdate.disabled = false;
+    btnRefresh.disabled = false;
+    spinner.classList.remove("show");
+  }
+}
+
+function tampilkanPesan(teks, kategori) {
+  const el = document.getElementById("jsMsg");
+  if (!teks) { el.innerHTML = ""; return; }
+  el.innerHTML = `<div class="msg ${kategori}">${teks}</div>`;
+}
+</script>
 </body>
 </html>
