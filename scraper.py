@@ -61,7 +61,7 @@ def find_page_links(html, current_url):
             links.append((int(text), href))
     return sorted(set(links))
 
-def sync_history(start_page=1, hard_cap_pages=40, max_history_pages=300, max_new_rows=20):
+def sync_history(start_page=1, hard_cap_pages=40, max_history_pages=300, max_new_rows=20, force_full_write=False):
     from database import upsert_rows, get_max_sort_key, compute_sort_key
 
     # =====================================================
@@ -97,6 +97,29 @@ def sync_history(start_page=1, hard_cap_pages=40, max_history_pages=300, max_new
     # hard_cap_pages, hasilnya "caught_up": False -> jalan
     # berikutnya (5 menit lagi) otomatis lanjut mengejar sisanya
     # (aman diulang, dedup otomatis lewat doc_id).
+    #
+    # =====================================================
+    # BUG KETAHUAN: sort_key = tanggal + TEKS periode mentah.
+    # Koleksi "history" campur BANYAK kode pasaran (POL, YSLM,
+    # PNM, OR1, HELS, RM, CRD, NYM, BLRS, dst) dalam tanggal yang
+    # sama. Perbandingan sort_key di bawah ini murni STRING, jadi
+    # "POL-612" dianggap "lebih kecil" dari "YSLM-612" cuma
+    # karena P < Y secara alfabet -- padahal keduanya sama-sama
+    # data tanggal yang sama, sama-sama valid, cuma beda pasaran.
+    # Akibatnya begitu satu kode pasaran yang "besar" alfabetnya
+    # (mis. YSLM) sudah pernah tersimpan, kode pasaran lain yang
+    # "kecil" alfabetnya (POL, PNM, OR1, dst) di tanggal SAMA jadi
+    # dikira "sudah lama" dan tidak pernah ditulis -- walau
+    # sebenarnya belum pernah ada di database sama sekali.
+    #
+    # force_full_write=True (dipakai tombol update manual) untuk
+    # menghindari ini: SEMUA baris yang terbaca di window
+    # hard_cap_pages ditulis apa adanya, tanpa berhenti/filter
+    # berdasarkan sort_key. Aman dari data kembar karena doc_id
+    # Firestore = tanggal_periode_nomor (baca komentar di
+    # database.py upsert_rows), jadi baris yang sudah ada ya
+    # cuma ditimpa ulang dengan isi yang identik, tidak bikin
+    # dokumen baru.
     # =====================================================
 
     if start_page < 1:
@@ -135,6 +158,22 @@ def sync_history(start_page=1, hard_cap_pages=40, max_history_pages=300, max_new
         all_rows.extend(page_rows)
         pages_scanned += 1
         page_no += 1
+
+        if force_full_write:
+            # Mode paksa: tetap hitung "data baru" buat laporan, tapi
+            # JANGAN berhenti/skip gara-gara sort_key -- baca terus
+            # sampai hard_cap_pages habis atau situs sumber habis.
+            if known_max_sort_key is not None:
+                page_sort_keys = [
+                    compute_sort_key(r["tanggal"], r["periode"])
+                    for r in page_rows
+                ]
+                new_row_count += sum(
+                    1 for k in page_sort_keys if k > known_max_sort_key
+                )
+            else:
+                new_row_count += len(page_rows)
+            continue
 
         if known_max_sort_key is not None:
             page_sort_keys = [
@@ -181,8 +220,15 @@ def sync_history(start_page=1, hard_cap_pages=40, max_history_pages=300, max_new
     #    urutannya kacau.
     # 2) Boros kuota write Firestore untuk dokumen yang isinya
     #    sama persis dan tidak perlu ditulis ulang.
+    #
+    # force_full_write=True SENGAJA melewati filter ini -- lihat
+    # catatan bug sort_key di atas. Konsekuensinya: dokumen lama
+    # yang ikut kebaca ulang di window ini akan ter-refresh
+    # updated_at-nya (bukan salah, cuma bikin dia numpang muncul
+    # di atas daftar "terbaru" sebentar sampai data lebih baru
+    # menggantikannya lagi).
     # =====================================================
-    if known_max_sort_key is not None:
+    if known_max_sort_key is not None and not force_full_write:
         unique = {
             key: r for key, r in unique.items()
             if compute_sort_key(r["tanggal"], r["periode"]) > known_max_sort_key
