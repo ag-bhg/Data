@@ -41,7 +41,7 @@
 
   <div class="actions">
     <button id="btnUpdate" class="btn-update" onclick="jalankanUpdateManual()">🔄 Update Data Manual</button>
-    <button id="btnRefresh" class="btn-refresh" onclick="location.reload()">↻ Refresh Tampilan</button>
+    <button id="btnRefresh" class="btn-refresh" onclick="refreshTampilan()">↻ Refresh Tampilan</button>
   </div>
   <div class="spinner" id="spinner"><span class="dot"></span> Sedang membaca 30 halaman dari sumber, mohon tunggu...</div>
 
@@ -99,7 +99,7 @@ async function jalankanUpdateManual() {
         `Update selesai. Halaman dibaca: ${data.pages_scanned}, data baru: ${data.new_rows}, tersimpan/berubah: ${data.changed}${data.caught_up ? " (sudah mengejar sampai data lama)" : " (masih ada gap, ulangi jika perlu)"}.`,
         "success"
       );
-      setTimeout(() => location.reload(), 1200);
+      setTimeout(() => refreshTampilan(), 1200);
     } else {
       tampilkanPesan("Gagal update: " + (data.error || "unknown error"), "error");
     }
@@ -116,6 +116,14 @@ function tampilkanPesan(teks, kategori) {
   const el = document.getElementById("jsMsg");
   if (!teks) { el.innerHTML = ""; return; }
   el.innerHTML = `<div class="msg ${kategori}">${teks}</div>`;
+}
+
+function refreshTampilan() {
+  // Tambah parameter cache-buster (_ts) supaya browser dipaksa
+  // ambil ulang dari server, bukan pakai cache lama.
+  const url = new URL(window.location.href);
+  url.searchParams.set("_ts", Date.now());
+  window.location.href = url.toString();
 }
 </script>
 </body>
