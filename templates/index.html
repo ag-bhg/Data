@@ -23,10 +23,6 @@
   <h1>Draw History — Demo Lokal</h1>
   <p><small>Total data tersimpan: {{ total }}</small></p>
 
-  <form method="post" action="{{ url_for('sync') }}">
-    <button type="submit">Update Data</button>
-  </form>
-
   {% with messages = get_flashed_messages(with_categories=true) %}
     {% for category, message in messages %}
       <div class="msg {{ category }}">{{ message }}</div>
