@@ -143,6 +143,48 @@ def cron_sync():
 
 
 # =========================================================
+# UPDATE MANUAL (tombol di index.html)
+#
+# Beda dengan /api/cron (butuh CRON_SECRET, dipanggil mesin),
+# endpoint ini dipanggil dari tombol di halaman utama. Kode
+# "13579" cuma pengaman di sisi tampilan (mencegah salah pencet),
+# BUKAN autentikasi — siapa pun yang buka halaman ini memang
+# sudah bisa lihat /api/nomor dkk tanpa token juga.
+#
+# Baca 30 halaman (hard_cap_pages=30), max_new_rows dilonggarkan
+# supaya tidak berhenti duluan sebelum 30 halaman selesai dibaca
+# kalau memang ada banyak data yang belum tertulis. Data yang
+# belum ada otomatis ditulis ke database oleh sync_history()
+# (lewat upsert_rows).
+# =========================================================
+
+@app.post("/api/manual-sync")
+def manual_sync():
+    kode_input = (request.json or {}).get("kode") if request.is_json else request.form.get("kode")
+
+    if kode_input != "13579":
+        return jsonify({"ok": False, "error": "Kode pengaman salah"}), 400
+
+    try:
+        result = sync_history(hard_cap_pages=30, max_new_rows=100000)
+
+        return jsonify({
+            "ok": True,
+            "message": "Update manual selesai",
+            "changed": result["changed"],
+            "new_rows": result["new_rows"],
+            "pages_scanned": result["pages_scanned"],
+            "caught_up": result["caught_up"]
+        }), 200
+
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "error": str(exc)
+        }), 500
+
+
+# =========================================================
 # MIGRASI SATU KALI (isi field sort_key untuk dokumen lama)
 #
 # Cara pakai:
