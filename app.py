@@ -1,7 +1,7 @@
 import os
 import re
 
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
+from flask import Flask, render_template, request, jsonify
 from scraper import sync_history
 from database import init_db, get_rows, get_rows_by_recency, count_rows, migrate_sort_keys
 import sl_engine as engine
@@ -67,56 +67,69 @@ def index():
     )
 
 
-@app.post("/sync")
-def sync():
-    try:
-        result = sync_history()
-        changed = result["changed"]
-        pages = result["pages_scanned"]
-
-        if result["caught_up"]:
-            flash(
-                f"Sinkronisasi selesai. {changed} data diproses ({pages} halaman dipindai) — sudah mengejar sampai data terbaru.",
-                "success"
-            )
-        else:
-            flash(
-                f"Sinkronisasi sebagian: {changed} data diproses ({pages} halaman dipindai), masih ada gap. Klik \"Update Data\" sekali lagi untuk lanjut mengejar sisanya.",
-                "success"
-            )
-
-    except Exception as exc:
-        flash(
-            f"Gagal mengambil data: {exc}",
-            "error"
-        )
-
-    return redirect(url_for("index"))
-
-
 # =========================================================
-# CRON OTOMATIS
+# AUTO UPDATE — 2 JADWAL BERJALAN BARENGAN
+#
+# Tombol "Update Data" manual sudah dihapus dari UI. Sekarang ada
+# 2 pemicu otomatis yang sama-sama manggil endpoint ini, tapi beda
+# tujuan:
+#
+# 1) GitHub Actions, tiap 5 menit (.github/workflows/auto-update.yml)
+#    -> mode default ("5min"), cap max_new_rows=20. Ini tulang
+#       punggung update real-time.
+#
+# 2) Vercel Cron, 1x/hari (vercel.json, path "/api/cron?mode=daily")
+#    -> mode "daily", cap hard_cap_pages=6 (~120 data). Cuma
+#       jaring pengaman kecil kalau job 5 menit sempat kelewat
+#       beberapa siklus (server tidur, deploy, dsb) — BUKAN sapuan
+#       besar. Database sudah ~12 ribuan baris, jadi cukup 6
+#       halaman/120 data per hari, tidak perlu lebih.
+#
+# OTORISASI — terima 2 cara sekaligus, karena 2 pemicu di atas
+# kirim auth dengan cara beda:
+# - GitHub Actions -> header custom "X-Cron-Secret: <CRON_SECRET>"
+# - Vercel Cron (bawaan) -> otomatis kirim
+#   "Authorization: Bearer <CRON_SECRET>" kalau env var CRON_SECRET
+#   di-set di project Vercel-nya (tidak perlu diatur manual).
+# Set env var CRON_SECRET yang SAMA di kedua tempat (Vercel env +
+# repo secret GitHub) supaya dua-duanya lolos otorisasi.
 # =========================================================
 
 @app.get("/api/cron")
 def cron_sync():
 
-    # Vercel Cron mengirim User-Agent ini.
-    user_agent = request.headers.get("User-Agent", "")
+    expected_secret = os.environ.get("CRON_SECRET", "")
+    provided_secret = request.headers.get("X-Cron-Secret", "")
 
-    if "vercel-cron" not in user_agent.lower():
+    auth_header = request.headers.get("Authorization", "")
+    bearer_secret = auth_header[7:] if auth_header.lower().startswith("bearer ") else ""
+
+    is_authorized = bool(expected_secret) and (
+        provided_secret == expected_secret or bearer_secret == expected_secret
+    )
+
+    if not is_authorized:
         return jsonify({
             "ok": False,
             "error": "Unauthorized"
         }), 401
 
+    mode = request.args.get("mode", "5min")
+
+    if mode == "daily":
+        sync_kwargs = {"max_new_rows": 120, "hard_cap_pages": 6}
+    else:
+        sync_kwargs = {"max_new_rows": 20}
+
     try:
-        result = sync_history()
+        result = sync_history(**sync_kwargs)
 
         return jsonify({
             "ok": True,
+            "mode": mode,
             "message": "Sinkronisasi otomatis berhasil",
             "changed": result["changed"],
+            "new_rows": result["new_rows"],
             "pages_scanned": result["pages_scanned"],
             "caught_up": result["caught_up"]
         }), 200
