@@ -58,13 +58,20 @@ def index():
 
     pages = max(1, (total + per_page - 1) // per_page)
 
-    return render_template(
+    resp = render_template(
         "index.html",
         rows=rows,
         page=page,
         pages=pages,
         total=total
     )
+
+    response = app.make_response(resp)
+    # Cegah browser/CDN nyimpen cache halaman ini, supaya tombol
+    # "Refresh Tampilan" selalu ambil data terbaru dari server,
+    # bukan versi lama yang ke-cache.
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return response
 
 
 # =========================================================
@@ -166,7 +173,7 @@ def manual_sync():
         return jsonify({"ok": False, "error": "Kode pengaman salah"}), 400
 
     try:
-        result = sync_history(hard_cap_pages=30, max_new_rows=100000)
+        result = sync_history(hard_cap_pages=30, max_new_rows=100000, force_full_write=True)
 
         return jsonify({
             "ok": True,
