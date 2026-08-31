@@ -61,7 +61,7 @@ def find_page_links(html, current_url):
             links.append((int(text), href))
     return sorted(set(links))
 
-def sync_history(start_page=1, hard_cap_pages=40, max_history_pages=300):
+def sync_history(start_page=1, hard_cap_pages=40, max_history_pages=300, max_new_rows=20):
     from database import upsert_rows, get_max_sort_key, compute_sort_key
 
     # =====================================================
@@ -80,11 +80,23 @@ def sync_history(start_page=1, hard_cap_pages=40, max_history_pages=300):
     # sebelumnya -> baru berhenti. Jadi seberapa pun lama absen,
     # tetap otomatis "mengejar" tanpa ada yang bolong.
     #
-    # hard_cap_pages membatasi jumlah halaman per SEKALI klik,
-    # supaya tidak timeout di serverless function. Kalau gap-nya
-    # lebih dalam dari itu, hasilnya "caught_up": False -> user
-    # tinggal klik "Update Data" sekali lagi untuk lanjut mengejar
-    # sisanya (aman diulang, dedup otomatis lewat doc_id).
+    # hard_cap_pages membatasi jumlah halaman per SEKALI jalan,
+    # supaya tidak timeout di serverless function.
+    #
+    # max_new_rows membatasi jumlah DATA BARU (bukan halaman)
+    # yang diambil per sekali jalan, default 20. Karena sekarang
+    # sync jalan otomatis tiap 5 menit (lihat GitHub Actions),
+    # tidak perlu memaksa mengejar SEMUA gap dalam 1x jalan -
+    # cukup ambil ~20 data terbaru per jalan, sisanya otomatis
+    # kekejar di jalan-jalan berikutnya 5 menit kemudian. Ini
+    # menghemat kuota baca/tulis Firestore & beban ke situs
+    # sumber, dibanding dulu langsung menyapu 2000-3000 data
+    # sekaligus tiap update.
+    #
+    # Kalau gap-nya lebih dalam dari max_new_rows atau
+    # hard_cap_pages, hasilnya "caught_up": False -> jalan
+    # berikutnya (5 menit lagi) otomatis lanjut mengejar sisanya
+    # (aman diulang, dedup otomatis lewat doc_id).
     # =====================================================
 
     if start_page < 1:
@@ -95,8 +107,10 @@ def sync_history(start_page=1, hard_cap_pages=40, max_history_pages=300):
     all_rows = []
     page_no = start_page
     pages_scanned = 0
+    new_row_count = 0
     reached_end_of_site = False
     matched_known_data = False
+    hit_new_row_cap = False
 
     while pages_scanned < hard_cap_pages and page_no <= max_history_pages:
         if page_no == 1:
@@ -127,11 +141,25 @@ def sync_history(start_page=1, hard_cap_pages=40, max_history_pages=300):
                 compute_sort_key(r["tanggal"], r["periode"])
                 for r in page_rows
             ]
+            new_row_count += sum(
+                1 for k in page_sort_keys if k > known_max_sort_key
+            )
             if all(k <= known_max_sort_key for k in page_sort_keys):
                 # Semua baris di halaman ini sudah pernah tersimpan
                 # sebelumnya -> sudah mengejar sampai data lama, berhenti.
                 matched_known_data = True
                 break
+        else:
+            # Koleksi masih kosong (belum pernah sync sama sekali) ->
+            # semua baris yang terbaca dihitung sebagai "baru".
+            new_row_count += len(page_rows)
+
+        if new_row_count >= max_new_rows:
+            # Sudah dapat cukup data baru untuk sekali jalan ini.
+            # Sisa gap (kalau ada) otomatis kekejar di jalan
+            # berikutnya 5 menit lagi.
+            hit_new_row_cap = True
+            break
 
     # Hilangkan duplikat dalam batch berdasarkan identitas data.
     unique = {
@@ -139,12 +167,34 @@ def sync_history(start_page=1, hard_cap_pages=40, max_history_pages=300):
         for r in all_rows
     }
 
+    # =====================================================
+    # PERBAIKAN: buang baris yang TERNYATA sudah pernah tersimpan
+    # (sort_key-nya <= known_max_sort_key).
+    #
+    # Baris seperti ini bisa ikut terbawa dari halaman "batas"
+    # (halaman yang isinya campuran data baru + data lama sekaligus).
+    # Kalau ikut dikirim ke upsert_rows, dokumen lama itu ditulis
+    # ulang (merge=True) dan field "updated_at"-nya ikut ter-refresh
+    # ke waktu SEKARANG — padahal bukan data baru. Akibatnya:
+    # 1) Data lama muncul seolah "baru disinkronkan" di
+    #    get_rows_by_recency() (dipakai halaman utama "/"), jadi
+    #    urutannya kacau.
+    # 2) Boros kuota write Firestore untuk dokumen yang isinya
+    #    sama persis dan tidak perlu ditulis ulang.
+    # =====================================================
+    if known_max_sort_key is not None:
+        unique = {
+            key: r for key, r in unique.items()
+            if compute_sort_key(r["tanggal"], r["periode"]) > known_max_sort_key
+        }
+
     changed = upsert_rows(list(unique.values()))
 
-    caught_up = matched_known_data or reached_end_of_site
+    caught_up = (matched_known_data or reached_end_of_site) and not hit_new_row_cap
 
     return {
         "changed": changed,
         "pages_scanned": pages_scanned,
+        "new_rows": new_row_count,
         "caught_up": caught_up,
     }
