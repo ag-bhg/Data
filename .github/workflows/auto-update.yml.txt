@@ -1,0 +1,30 @@
+name: Auto Update Data
+
+on:
+  schedule:
+    # Tiap 5 menit. Catatan: GitHub Actions tidak menjamin waktu
+    # eksekusi persis — pada jam sibuk bisa molor beberapa menit,
+    # tapi karena logika sync bersifat "catch-up" (baca sort_key
+    # terakhir lalu ambil data baru saja), keterlambatan jadwal
+    # tidak menyebabkan data hilang, cuma numpuk lalu kekejar di
+    # jalan berikutnya.
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+    # Supaya bisa dipicu manual dari tab "Actions" di GitHub kalau
+    # perlu, tanpa harus menunggu jadwal.
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Panggil endpoint auto-update
+        run: |
+          http_code=$(curl -s -o response.txt -w "%{http_code}" \
+            -H "X-Cron-Secret: ${{ secrets.CRON_SECRET }}" \
+            "${{ secrets.APP_URL }}/api/cron")
+          echo "HTTP status: $http_code"
+          cat response.txt
+          if [ "$http_code" -ne 200 ]; then
+            echo "Update gagal (status $http_code)"
+            exit 1
+          fi
