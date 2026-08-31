@@ -3,7 +3,7 @@ import re
 
 from flask import Flask, render_template, request, jsonify
 from scraper import sync_history
-from database import init_db, get_rows, get_rows_by_recency, count_rows, migrate_sort_keys
+from database import init_db, get_rows, count_rows, migrate_sort_keys
 import sl_engine as engine
 
 app = Flask(__name__)
@@ -53,7 +53,7 @@ def index():
     page = max(1, request.args.get("page", 1, type=int))
     per_page = 25
 
-    rows = get_rows_by_recency(page, per_page)
+    rows = get_rows(page, per_page)
     total = count_rows()
 
     pages = max(1, (total + per_page - 1) // per_page)
