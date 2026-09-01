@@ -7,6 +7,8 @@ from database import (
     get_rows,
     count_rows,
     migrate_sort_keys,
+    migrate_kode_pasaran,
+    get_kode_pasaran_options,
     extract_kode_pasaran,
     extract_urutan_pasaran,
 )
@@ -29,8 +31,14 @@ def index():
     page = max(1, request.args.get("page", 1, type=int))
     per_page = 25
 
-    rows = get_rows(page, per_page)
-    total = count_rows()
+    # Dropdown periode (Form 1 di atas, Form 2 di dekat pager) --
+    # kosong ("") berarti "Semua", sama seperti opsi "Semua" di
+    # dropdown situs sumber.
+    kode = request.args.get("kode", "").strip()
+
+    rows = get_rows(page, per_page, kode=kode or None)
+    total = count_rows(kode=kode or None)
+    kode_options = get_kode_pasaran_options()
 
     pages = max(1, (total + per_page - 1) // per_page)
 
@@ -39,7 +47,9 @@ def index():
         rows=rows,
         page=page,
         pages=pages,
-        total=total
+        total=total,
+        kode_options=kode_options,
+        selected_kode=kode
     )
 
     response = app.make_response(resp)
@@ -190,6 +200,42 @@ def migrate_sort_key_route():
 
     try:
         updated = migrate_sort_keys()
+
+        return jsonify({
+            "ok": True,
+            "updated": updated
+        }), 200
+
+    except Exception as exc:
+
+        return jsonify({
+            "ok": False,
+            "error": str(exc)
+        }), 500
+
+
+# =========================================================
+# MIGRASI SATU KALI (isi field kode_pasaran untuk dokumen lama)
+#
+# Dibutuhkan supaya dropdown periode di "/" (filter
+# .where("kode_pasaran", "==", ...) di get_rows()) juga
+# menjangkau data lama yang ditulis sebelum field ini ada.
+# Cara pakai sama seperti /api/migrate-sort-key: buka sekali
+# https://domain-kamu/api/migrate-kode-pasaran?token=ISI_TOKEN,
+# aman dipanggil berkali-kali (dokumen yang sudah punya field ini
+# otomatis dilewati).
+# =========================================================
+
+@app.get("/api/migrate-kode-pasaran")
+def migrate_kode_pasaran_route():
+    token = request.args.get("token", "")
+    expected = os.environ.get("MIGRATE_TOKEN", "")
+
+    if not expected or token != expected:
+        return jsonify({"ok": False, "error": "Unauthorized"}), 401
+
+    try:
+        updated = migrate_kode_pasaran()
 
         return jsonify({
             "ok": True,
