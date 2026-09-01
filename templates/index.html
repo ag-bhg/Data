@@ -11,19 +11,14 @@
     table{width:100%;border-collapse:collapse;margin-top:16px}
     th,td{text-align:left;padding:10px;border-bottom:1px solid #ddd}
     th{background:#f0f0f0}
-    .pager{display:flex;gap:8px;margin-top:18px;flex-wrap:wrap}
+    .pager{display:flex;gap:8px;margin-top:18px;flex-wrap:wrap;align-items:center}
     .pager a{padding:7px 11px;background:#eee;border-radius:7px;text-decoration:none;color:#222}
     .msg{padding:10px;border-radius:8px;margin:10px 0}
     .success{background:#e7f7e7}.error{background:#fde8e8}
     small{color:#666}
-    .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
-    .btn-update{background:#2563eb;color:#fff}
-    .btn-refresh{background:#e5e7eb;color:#222}
-    button:disabled{opacity:.6;cursor:not-allowed}
-    .spinner{display:none;align-items:center;gap:8px;margin-top:10px;color:#555}
-    .spinner.show{display:flex}
-    .spinner .dot{width:14px;height:14px;border:2px solid #ccc;border-top-color:#2563eb;border-radius:50%;animation:spin .7s linear infinite}
-    @keyframes spin{to{transform:rotate(360deg)}}
+    .filter-periode{display:flex;gap:8px;align-items:center;margin-top:14px}
+    .filter-periode select{padding:8px 10px;border-radius:8px;border:1px solid #ccc;background:#fff}
+    .filter-periode label{font-size:14px;color:#444}
   </style>
 </head>
 <body>
@@ -31,19 +26,29 @@
   <h1>Draw History — Demo Lokal</h1>
   <p><small>Total data tersimpan: {{ total }}</small></p>
 
+  <form method="post" action="{{ url_for('sync') }}">
+    <button type="submit">Update Data</button>
+  </form>
+
+  <!-- Dropdown periode, seperti dropdown "Semua / <nama pasaran>"
+       di situs sumber. Auto-submit lewat GET ke "/" begitu dipilih,
+       tabel & pager langsung mengikuti periode terpilih. -->
+  <form method="get" action="{{ url_for('index') }}" class="filter-periode">
+    <label for="kode-top">Periode:</label>
+    <select name="kode" id="kode-top" onchange="this.form.submit()">
+      <option value="" {% if not selected_kode %}selected{% endif %}>Semua</option>
+      {% for k in kode_options %}
+      <option value="{{ k }}" {% if k == selected_kode %}selected{% endif %}>{{ k }}</option>
+      {% endfor %}
+    </select>
+    <noscript><button type="submit">Tampilkan</button></noscript>
+  </form>
+
   {% with messages = get_flashed_messages(with_categories=true) %}
     {% for category, message in messages %}
       <div class="msg {{ category }}">{{ message }}</div>
     {% endfor %}
   {% endwith %}
-
-  <div id="jsMsg"></div>
-
-  <div class="actions">
-    <button id="btnUpdate" class="btn-update" onclick="jalankanUpdateManual()">🔄 Update Data Manual</button>
-    <button id="btnRefresh" class="btn-refresh" onclick="refreshTampilan()">↻ Refresh Tampilan</button>
-  </div>
-  <div class="spinner" id="spinner"><span class="dot"></span> Sedang membaca 30 halaman dari sumber, mohon tunggu...</div>
 
   <table>
     <thead><tr><th>Tanggal</th><th>Periode</th><th>Nomor</th></tr></thead>
@@ -55,76 +60,16 @@
         <td>{{ row["nomor"] }}</td>
       </tr>
       {% else %}
-      <tr><td colspan="3">Belum ada data. Klik Update Data.</td></tr>
+      <tr><td colspan="3">Belum ada data{% if selected_kode %} untuk periode "{{ selected_kode }}"{% endif %}. Klik Update Data.</td></tr>
       {% endfor %}
     </tbody>
   </table>
 
   <div class="pager">
-    {% if page > 1 %}<a href="?page={{ page-1 }}">← Sebelumnya</a>{% endif %}
+    {% if page > 1 %}<a href="?page={{ page-1 }}{% if selected_kode %}&kode={{ selected_kode }}{% endif %}">← Sebelumnya</a>{% endif %}
     <span>Halaman {{ page }} / {{ pages }}</span>
-    {% if page < pages %}<a href="?page={{ page+1 }}">Berikutnya →</a>{% endif %}
+    {% if page < pages %}<a href="?page={{ page+1 }}{% if selected_kode %}&kode={{ selected_kode }}{% endif %}">Berikutnya →</a>{% endif %}
   </div>
 </div>
-
-<script>
-async function jalankanUpdateManual() {
-  const kode = prompt("Masukkan kode pengaman untuk update manual:");
-  if (kode === null) return; // dibatalkan
-
-  if (kode !== "13579") {
-    tampilkanPesan("Kode pengaman salah. Update dibatalkan.", "error");
-    return;
-  }
-
-  const btnUpdate = document.getElementById("btnUpdate");
-  const btnRefresh = document.getElementById("btnRefresh");
-  const spinner = document.getElementById("spinner");
-
-  btnUpdate.disabled = true;
-  btnRefresh.disabled = true;
-  spinner.classList.add("show");
-  tampilkanPesan("", "");
-
-  try {
-    const res = await fetch("/api/manual-sync", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ kode })
-    });
-    const data = await res.json();
-
-    if (data.ok) {
-      tampilkanPesan(
-        `Update selesai. Halaman dibaca: ${data.pages_scanned}, data baru: ${data.new_rows}, tersimpan/berubah: ${data.changed}${data.caught_up ? " (sudah mengejar sampai data lama)" : " (masih ada gap, ulangi jika perlu)"}.`,
-        "success"
-      );
-      setTimeout(() => refreshTampilan(), 1200);
-    } else {
-      tampilkanPesan("Gagal update: " + (data.error || "unknown error"), "error");
-    }
-  } catch (err) {
-    tampilkanPesan("Gagal menghubungi server: " + err, "error");
-  } finally {
-    btnUpdate.disabled = false;
-    btnRefresh.disabled = false;
-    spinner.classList.remove("show");
-  }
-}
-
-function tampilkanPesan(teks, kategori) {
-  const el = document.getElementById("jsMsg");
-  if (!teks) { el.innerHTML = ""; return; }
-  el.innerHTML = `<div class="msg ${kategori}">${teks}</div>`;
-}
-
-function refreshTampilan() {
-  // Tambah parameter cache-buster (_ts) supaya browser dipaksa
-  // ambil ulang dari server, bukan pakai cache lama.
-  const url = new URL(window.location.href);
-  url.searchParams.set("_ts", Date.now());
-  window.location.href = url.toString();
-}
-</script>
 </body>
 </html>
