@@ -62,70 +62,72 @@ def find_page_links(html, current_url):
     return sorted(set(links))
 
 def sync_history(start_page=1, hard_cap_pages=40, max_history_pages=300, max_new_rows=20, force_full_write=False):
-    from database import upsert_rows, get_max_sort_key, compute_sort_key
+    from database import (
+        upsert_rows,
+        get_pasaran_progress,
+        update_pasaran_progress,
+        extract_kode_pasaran,
+        extract_urutan_pasaran,
+        compute_group_sort_key,
+    )
 
     # =====================================================
     # LOGIKA "CATCH-UP" (mengejar), bukan lagi batch tetap.
     #
-    # Sebelumnya: selalu baca halaman 1-20 saja tiap sync, apa
-    # pun kondisinya. Kalau tidak sync beberapa hari, data baru
-    # dari BANYAK pasaran gabungan bisa menggeser data lama itu
-    # sampai melebihi 20 halaman -> ada bagian riwayat yang
-    # PERMANEN terlewat (bikin urutan Periode terlihat
-    # melompat-lompat / acak).
-    #
-    # Sekarang: cek dulu sort_key TERBARU yang sudah tersimpan
-    # (1 read saja), lalu scrape halaman 1, 2, 3, dst sampai
-    # ketemu halaman yang isinya SEMUA sudah pernah tersimpan
-    # sebelumnya -> baru berhenti. Jadi seberapa pun lama absen,
-    # tetap otomatis "mengejar" tanpa ada yang bolong.
+    # Cek dulu progres TERBARU yang sudah tersimpan (1 read utk
+    # semua kode pasaran, lihat get_pasaran_progress), lalu scrape
+    # halaman 1, 2, 3, dst sampai ketemu halaman yang isinya SEMUA
+    # sudah pernah tersimpan sebelumnya -> baru berhenti. Jadi
+    # seberapa pun lama absen, tetap otomatis "mengejar" tanpa ada
+    # yang bolong.
     #
     # hard_cap_pages membatasi jumlah halaman per SEKALI jalan,
-    # supaya tidak timeout di serverless function.
-    #
-    # max_new_rows membatasi jumlah DATA BARU (bukan halaman)
-    # yang diambil per sekali jalan, default 20. Karena sekarang
-    # sync jalan otomatis tiap 5 menit (lihat GitHub Actions),
-    # tidak perlu memaksa mengejar SEMUA gap dalam 1x jalan -
-    # cukup ambil ~20 data terbaru per jalan, sisanya otomatis
-    # kekejar di jalan-jalan berikutnya 5 menit kemudian. Ini
-    # menghemat kuota baca/tulis Firestore & beban ke situs
-    # sumber, dibanding dulu langsung menyapu 2000-3000 data
-    # sekaligus tiap update.
-    #
-    # Kalau gap-nya lebih dalam dari max_new_rows atau
-    # hard_cap_pages, hasilnya "caught_up": False -> jalan
-    # berikutnya (5 menit lagi) otomatis lanjut mengejar sisanya
-    # (aman diulang, dedup otomatis lewat doc_id).
+    # supaya tidak timeout di serverless function. max_new_rows
+    # membatasi jumlah DATA BARU per sekali jalan (default 20,
+    # sync jalan tiap 5 menit lewat GitHub Actions) -- sisa gap
+    # otomatis kekejar di jalan berikutnya (aman diulang, dedup
+    # otomatis lewat doc_id).
     #
     # =====================================================
-    # BUG KETAHUAN: sort_key = tanggal + TEKS periode mentah.
-    # Koleksi "history" campur BANYAK kode pasaran (POL, YSLM,
-    # PNM, OR1, HELS, RM, CRD, NYM, BLRS, dst) dalam tanggal yang
-    # sama. Perbandingan sort_key di bawah ini murni STRING, jadi
-    # "POL-612" dianggap "lebih kecil" dari "YSLM-612" cuma
-    # karena P < Y secara alfabet -- padahal keduanya sama-sama
-    # data tanggal yang sama, sama-sama valid, cuma beda pasaran.
-    # Akibatnya begitu satu kode pasaran yang "besar" alfabetnya
-    # (mis. YSLM) sudah pernah tersimpan, kode pasaran lain yang
-    # "kecil" alfabetnya (POL, PNM, OR1, dst) di tanggal SAMA jadi
-    # dikira "sudah lama" dan tidak pernah ditulis -- walau
-    # sebenarnya belum pernah ada di database sama sekali.
+    # PERBAIKAN (sebelumnya BUG): dulu "sudah pernah tersimpan"
+    # dicek pakai SATU sort_key global gabungan semua kode
+    # pasaran (get_max_sort_key), yang isinya tanggal + TEKS
+    # periode mentah. Karena perbandingannya string, nama kode
+    # pasaran ikut menentukan "besar-kecil" walau itu tidak ada
+    # hubungannya dengan waktu -- "KK-1223" dianggap "lebih
+    # kecil" dari "YSLM-612" cuma karena K < Y secara alfabet.
+    # Begitu satu kode berhuruf awal besar (YSLM, WDM, VIRD, dst)
+    # pernah tersimpan di tanggal itu, kode-kode berhuruf awal
+    # lebih kecil (KK, CRD, BLRS, DELD, dst) jadi PERMANEN
+    # dianggap "sudah lama" dan tidak pernah ditulis lagi, walau
+    # draw barunya belum pernah tersimpan sama sekali (persis
+    # gejala "KK macet" yang teramati di sumber vs sistem sendiri).
     #
-    # force_full_write=True (dipakai tombol update manual) untuk
-    # menghindari ini: SEMUA baris yang terbaca di window
-    # hard_cap_pages ditulis apa adanya, tanpa berhenti/filter
-    # berdasarkan sort_key. Aman dari data kembar karena doc_id
-    # Firestore = tanggal_periode_nomor (baca komentar di
-    # database.py upsert_rows), jadi baris yang sudah ada ya
-    # cuma ditimpa ulang dengan isi yang identik, tidak bikin
-    # dokumen baru.
+    # SEKARANG: progres dilacak PER KODE PASARAN sendiri-sendiri
+    # (get_pasaran_progress/update_pasaran_progress di
+    # database.py), dibandingkan pakai nomor urut asli
+    # (compute_group_sort_key), bukan nama kode. Satu pasaran
+    # tidak lagi bisa memblokir pasaran lain.
     # =====================================================
 
     if start_page < 1:
         start_page = 1
 
-    known_max_sort_key = get_max_sort_key()
+    known_progress = get_pasaran_progress()
+
+    def _is_new(row):
+        urutan = extract_urutan_pasaran(row["periode"])
+        if urutan is None:
+            # Format periode tidak bisa dipecah jadi (kode, urutan) ->
+            # jangan sok tahu, anggap baru. Aman: doc_id Firestore
+            # deterministik (tanggal_periode_nomor), jadi kalau
+            # ternyata memang sudah ada, cuma ditimpa ulang dengan
+            # isi identik, bukan bikin duplikat.
+            return True
+        kode = extract_kode_pasaran(row["periode"])
+        group_key = compute_group_sort_key(row["tanggal"], urutan)
+        last_known = known_progress.get(kode)
+        return last_known is None or group_key > last_known
 
     all_rows = []
     page_no = start_page
@@ -159,39 +161,24 @@ def sync_history(start_page=1, hard_cap_pages=40, max_history_pages=300, max_new
         pages_scanned += 1
         page_no += 1
 
+        page_new_flags = [_is_new(r) for r in page_rows]
+        page_new_count = sum(page_new_flags)
+
         if force_full_write:
             # Mode paksa: tetap hitung "data baru" buat laporan, tapi
-            # JANGAN berhenti/skip gara-gara sort_key -- baca terus
-            # sampai hard_cap_pages habis atau situs sumber habis.
-            if known_max_sort_key is not None:
-                page_sort_keys = [
-                    compute_sort_key(r["tanggal"], r["periode"])
-                    for r in page_rows
-                ]
-                new_row_count += sum(
-                    1 for k in page_sort_keys if k > known_max_sort_key
-                )
-            else:
-                new_row_count += len(page_rows)
+            # JANGAN berhenti gara-gara progres -- baca terus sampai
+            # hard_cap_pages habis atau situs sumber habis.
+            new_row_count += page_new_count
             continue
 
-        if known_max_sort_key is not None:
-            page_sort_keys = [
-                compute_sort_key(r["tanggal"], r["periode"])
-                for r in page_rows
-            ]
-            new_row_count += sum(
-                1 for k in page_sort_keys if k > known_max_sort_key
-            )
-            if all(k <= known_max_sort_key for k in page_sort_keys):
-                # Semua baris di halaman ini sudah pernah tersimpan
-                # sebelumnya -> sudah mengejar sampai data lama, berhenti.
-                matched_known_data = True
-                break
-        else:
-            # Koleksi masih kosong (belum pernah sync sama sekali) ->
-            # semua baris yang terbaca dihitung sebagai "baru".
-            new_row_count += len(page_rows)
+        new_row_count += page_new_count
+
+        if not any(page_new_flags):
+            # Semua baris di halaman ini sudah pernah tersimpan
+            # sebelumnya (per pasarannya masing-masing) -> sudah
+            # mengejar sampai data lama, berhenti.
+            matched_known_data = True
+            break
 
         if new_row_count >= max_new_rows:
             # Sudah dapat cukup data baru untuk sekali jalan ini.
@@ -206,35 +193,21 @@ def sync_history(start_page=1, hard_cap_pages=40, max_history_pages=300, max_new
         for r in all_rows
     }
 
-    # =====================================================
-    # PERBAIKAN: buang baris yang TERNYATA sudah pernah tersimpan
-    # (sort_key-nya <= known_max_sort_key).
-    #
-    # Baris seperti ini bisa ikut terbawa dari halaman "batas"
-    # (halaman yang isinya campuran data baru + data lama sekaligus).
-    # Kalau ikut dikirim ke upsert_rows, dokumen lama itu ditulis
-    # ulang (merge=True) dan field "updated_at"-nya ikut ter-refresh
-    # ke waktu SEKARANG — padahal bukan data baru. Akibatnya:
-    # 1) Data lama muncul seolah "baru disinkronkan" di
-    #    get_rows_by_recency() (dipakai halaman utama "/"), jadi
-    #    urutannya kacau.
-    # 2) Boros kuota write Firestore untuk dokumen yang isinya
-    #    sama persis dan tidak perlu ditulis ulang.
-    #
-    # force_full_write=True SENGAJA melewati filter ini -- lihat
-    # catatan bug sort_key di atas. Konsekuensinya: dokumen lama
-    # yang ikut kebaca ulang di window ini akan ter-refresh
-    # updated_at-nya (bukan salah, cuma bikin dia numpang muncul
-    # di atas daftar "terbaru" sebentar sampai data lebih baru
-    # menggantikannya lagi).
-    # =====================================================
-    if known_max_sort_key is not None and not force_full_write:
-        unique = {
-            key: r for key, r in unique.items()
-            if compute_sort_key(r["tanggal"], r["periode"]) > known_max_sort_key
-        }
+    # Buang baris yang TERNYATA sudah pernah tersimpan (per
+    # progres pasarannya masing-masing -- bukan patokan global lagi).
+    # force_full_write=True sengaja melewati filter ini (dipakai
+    # tombol update manual): semua baris di window ditulis apa
+    # adanya, aman dari duplikat karena doc_id Firestore
+    # deterministik.
+    if not force_full_write:
+        unique = {key: r for key, r in unique.items() if _is_new(r)}
 
     changed = upsert_rows(list(unique.values()))
+
+    # Majukan progres per-pasaran berdasarkan SEMUA baris yang
+    # terbaca batch ini (all_rows, bukan cuma yang lolos filter),
+    # supaya "garis depan" tiap pasaran tetap representatif.
+    update_pasaran_progress(all_rows, known_progress)
 
     caught_up = (matched_known_data or reached_end_of_site) and not hit_new_row_cap
 
