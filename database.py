@@ -1,4 +1,3 @@
-
 import os
 import re
 import json
@@ -299,6 +298,11 @@ def upsert_rows(rows):
             "nomor": nomor,
             "source_url": row.get("source_url"),
             "sort_key": compute_sort_key(tanggal, periode),
+            # Disimpan terpisah (bukan cuma diturunkan on-the-fly dari
+            # "periode" tiap kali baca) supaya bisa dipakai sebagai
+            # filter langsung di query Firestore (.where("kode_pasaran", "==", ...))
+            # -- lihat get_rows()/count_rows() dan dropdown periode di "/".
+            "kode_pasaran": extract_kode_pasaran(periode),
             "updated_at": firestore.SERVER_TIMESTAMP,
         }
 
@@ -323,7 +327,7 @@ def init_db():
     get_firestore_db()
 
 
-def get_rows(page, per_page):
+def get_rows(page, per_page, kode=None):
     """
     PERBAIKAN: sebelumnya fungsi ini men-stream SELURUH koleksi
     "history" lalu memotongnya di Python (rows[offset:offset+per_page]).
@@ -340,14 +344,31 @@ def get_rows(page, per_page):
     kapan datanya disimpan. Untuk tampilan "Draw History" di
     halaman utama, pakai get_rows_by_recency() di bawah supaya
     tidak keurut alfabet nama pasaran waktu tanggalnya sama.
+
+    kode: opsional, kode pasaran (mis. "OR2", "TTM 22:00") dari
+    dropdown periode di "/". Kalau diisi, query difilter pakai
+    field "kode_pasaran" (lihat upsert_rows) supaya pagination
+    tetap dilakukan di level Firestore (bukan filter manual di
+    Python) walau sedang menampilkan satu periode saja.
+
+    CATATAN DEPLOY: filter kode_pasaran + order_by sort_key
+    berbarengan butuh composite index di Firestore. Kalau belum
+    ada, Firestore akan menolak query ini dan memberi error yang
+    isinya link untuk membuat index tersebut otomatis -- tinggal
+    dibuka sekali saja.
     """
 
     db = get_firestore_db()
 
     offset = (page - 1) * per_page
 
+    query = db.collection("history")
+
+    if kode:
+        query = query.where("kode_pasaran", "==", kode)
+
     query = (
-        db.collection("history")
+        query
         .order_by("sort_key", direction=firestore.Query.DESCENDING)
         .offset(offset)
         .limit(per_page)
@@ -407,19 +428,92 @@ def get_rows_by_recency(page, per_page):
     return rows
 
 
-def count_rows():
+def count_rows(kode=None):
     """
     PERBAIKAN: sebelumnya men-stream SELURUH koleksi hanya untuk
     menghitung jumlah dokumen. Sekarang pakai Firestore
     aggregation query count(), yang dihitung di server Firestore
     tanpa mengunduh tiap dokumen satu per satu.
+
+    kode: opsional, sama seperti di get_rows() -- kalau diisi,
+    hitung total HANYA untuk periode itu (dipakai untuk info
+    "Total data tersimpan" dan hitung jumlah halaman saat dropdown
+    periode sedang aktif).
     """
 
     db = get_firestore_db()
 
-    result = db.collection("history").count().get()
+    query = db.collection("history")
+
+    if kode:
+        query = query.where("kode_pasaran", "==", kode)
+
+    result = query.count().get()
 
     return result[0][0].value
+
+
+def get_kode_pasaran_options():
+    """
+    Daftar semua kode pasaran yang tersedia, untuk isi dropdown
+    periode di "/" (dibuat SEPERTI dropdown pasaran di situs
+    sumber, lihat scraper.py SOURCE_URL).
+
+    Diambil dari collection "sync_state" (1 dokumen per kode
+    pasaran, sudah ada duluan untuk keperluan lain -- lihat
+    get_pasaran_progress()), BUKAN dari scan koleksi "history"
+    yang besar. Jadi cuma perlu baca sejumlah kode pasaran aktif,
+    bukan ribuan dokumen histori.
+    """
+
+    db = get_firestore_db()
+
+    kode_list = [doc.id for doc in db.collection("sync_state").stream()]
+
+    return sorted(kode_list)
+
+
+def migrate_kode_pasaran(batch_size=400):
+    """
+    JALANKAN SEKALI SAJA setelah deploy fitur dropdown periode,
+    untuk mengisi field "kode_pasaran" pada dokumen LAMA yang
+    dibuat sebelum field ini ada (dokumen lama tidak akan cocok
+    dengan filter .where("kode_pasaran", "==", ...) di get_rows()
+    sampai field-nya terisi).
+
+    Sama polanya dengan migrate_sort_keys() di atas -- satu kali
+    full-scan, lalu tidak perlu dipanggil lagi. Panggil lewat
+    endpoint /api/migrate-kode-pasaran (lihat app.py).
+    """
+
+    db = get_firestore_db()
+    docs = db.collection("history").stream()
+
+    batch = db.batch()
+    batch_count = 0
+    updated = 0
+
+    for doc in docs:
+        data = doc.to_dict() or {}
+
+        if "kode_pasaran" in data:
+            continue
+
+        kode = extract_kode_pasaran(data.get("periode"))
+        batch.set(doc.reference, {"kode_pasaran": kode}, merge=True)
+
+        batch_count += 1
+        updated += 1
+
+        if batch_count >= batch_size:
+            batch.commit()
+            batch = db.batch()
+            batch_count = 0
+
+    if batch_count > 0:
+        batch.commit()
+
+    return updated
 
 
 def get_max_sort_key():
