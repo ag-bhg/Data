@@ -1,9 +1,15 @@
 import os
-import re
 
 from flask import Flask, render_template, request, jsonify
 from scraper import sync_history
-from database import init_db, get_rows, count_rows, migrate_sort_keys
+from database import (
+    init_db,
+    get_rows,
+    count_rows,
+    migrate_sort_keys,
+    extract_kode_pasaran,
+    extract_urutan_pasaran,
+)
 import sl_engine as engine
 
 app = Flask(__name__)
@@ -11,41 +17,11 @@ app.secret_key = "local-demo-only-change-me"
 
 init_db()
 
-
-def extract_kode_pasaran(periode):
-    """
-    Kolom "periode" berisi kode pasaran + nomor urut, mis:
-    "TTM 22:00-604" -> kode pasaran "TTM 22:00"
-    "OR2-606"        -> kode pasaran "OR2"
-    Ambil bagian sebelum tanda "-NNN" di paling akhir.
-    """
-    periode = str(periode or "").strip()
-
-    m = re.match(r"^(.*)-(\d+)$", periode)
-
-    if m:
-        return m.group(1).strip()
-
-    return periode
-
-
-def extract_urutan_pasaran(periode):
-    """
-    Ambil nomor urut (angka setelah tanda "-" terakhir) dari
-    periode, mis "OR2-606" -> 606. Dipakai untuk deteksi gap
-    nomor urut per pasaran di /api/nomor-semua.
-    """
-    periode = str(periode or "").strip()
-
-    m = re.match(r"^(.*)-(\d+)$", periode)
-
-    if m:
-        try:
-            return int(m.group(2))
-        except ValueError:
-            return None
-
-    return None
+# extract_kode_pasaran / extract_urutan_pasaran sekarang dipindah ke
+# database.py supaya app.py dan scraper.py pakai fungsi yang SAMA
+# PERSIS (dulu didefinisikan ulang di sini, rawan beda logic kalau
+# salah satu diubah tanpa yang lain -- lihat catatan perbaikan bug
+# "KK macet" di scraper.py).
 
 
 @app.route("/")
