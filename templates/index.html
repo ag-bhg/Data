@@ -26,7 +26,9 @@
   <h1>Draw History — Demo Lokal</h1>
   <p><small>Total data tersimpan: {{ total }}</small></p>
 
-  <form method="post" action="{{ url_for('sync') }}">
+  <form method="post" action="{{ url_for('manual_sync') }}">
+    <input type="text" name="kode" placeholder="Kode pengaman" required
+           style="padding:8px;border-radius:6px;border:1px solid #ccc;margin-right:6px">
     <button type="submit">Update Data</button>
   </form>
 
