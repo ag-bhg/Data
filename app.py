@@ -6,8 +6,6 @@ from database import (
     init_db,
     get_rows,
     count_rows,
-    migrate_sort_keys,
-    migrate_kode_pasaran,
     get_kode_pasaran_options,
     extract_kode_pasaran,
     extract_urutan_pasaran,
@@ -190,8 +188,33 @@ def manual_sync():
 #    sort_key otomatis dilewati), tapi cukup dijalankan sekali.
 # =========================================================
 
-@app.get("/api/migrate-sort-key")
-def migrate_sort_key_route():
+# =========================================================
+# MIGRASI SATU KALI: Firestore (dtb2 lama) -> Postgres (Neon)
+#
+# CATATAN: endpoint /api/migrate-sort-key dan /api/migrate-kode-pasaran
+# yang lama (untuk backfill field di Firestore) sudah tidak relevan
+# sejak pindah ke Postgres dan dihapus dari sini.
+#
+# Cara pakai (sekali per proyek, saat pindah dari Firestore):
+# 1. Pastikan env var FIREBASE_CREDENTIALS (punya lama) DAN
+#    DATABASE_URL (punya baru, connection string Neon -- pakai
+#    versi "Pooled connection") sama-sama sudah diset di Vercel,
+#    lalu deploy.
+# 2. Migrasi "sync_state" dulu (kecil, sekali jalan penuh):
+#    https://domain-kamu/api/migrate-sync-state?token=ISI_TOKEN
+# 3. Migrasi "history" per batch (~12 ribuan baris -- dibatch
+#    supaya tidak timeout/kena limit baca Firestore sekali jalan):
+#    https://domain-kamu/api/migrate-to-postgres?token=ISI_TOKEN
+#    Responsnya berisi "next_cursor" kalau belum selesai -- buka
+#    lagi URL yang sama dengan tambahan &cursor=NILAI_NEXT_CURSOR,
+#    ulangi sampai muncul "done": true.
+# 4. Setelah "done": true dan data di halaman "/" sudah kelihatan
+#    benar, env var FIREBASE_CREDENTIALS boleh dihapus dari Vercel
+#    (Postgres sudah jadi satu-satunya sumber data).
+# =========================================================
+
+@app.get("/api/migrate-sync-state")
+def migrate_sync_state_route():
     token = request.args.get("token", "")
     expected = os.environ.get("MIGRATE_TOKEN", "")
 
@@ -199,11 +222,12 @@ def migrate_sort_key_route():
         return jsonify({"ok": False, "error": "Unauthorized"}), 401
 
     try:
-        updated = migrate_sort_keys()
+        from migrate_legacy import migrate_sync_state
+        moved = migrate_sync_state()
 
         return jsonify({
             "ok": True,
-            "updated": updated
+            "moved": moved
         }), 200
 
     except Exception as exc:
@@ -214,32 +238,25 @@ def migrate_sort_key_route():
         }), 500
 
 
-# =========================================================
-# MIGRASI SATU KALI (isi field kode_pasaran untuk dokumen lama)
-#
-# Dibutuhkan supaya dropdown periode di "/" (filter
-# .where("kode_pasaran", "==", ...) di get_rows()) juga
-# menjangkau data lama yang ditulis sebelum field ini ada.
-# Cara pakai sama seperti /api/migrate-sort-key: buka sekali
-# https://domain-kamu/api/migrate-kode-pasaran?token=ISI_TOKEN,
-# aman dipanggil berkali-kali (dokumen yang sudah punya field ini
-# otomatis dilewati).
-# =========================================================
-
-@app.get("/api/migrate-kode-pasaran")
-def migrate_kode_pasaran_route():
+@app.get("/api/migrate-to-postgres")
+def migrate_to_postgres_route():
     token = request.args.get("token", "")
     expected = os.environ.get("MIGRATE_TOKEN", "")
 
     if not expected or token != expected:
         return jsonify({"ok": False, "error": "Unauthorized"}), 401
 
+    cursor = request.args.get("cursor") or None
+    batch_size = request.args.get("batch_size", 500, type=int)
+    batch_size = max(50, min(batch_size, 1000))
+
     try:
-        updated = migrate_kode_pasaran()
+        from migrate_legacy import migrate_history_batch
+        result = migrate_history_batch(batch_size=batch_size, cursor=cursor)
 
         return jsonify({
             "ok": True,
-            "updated": updated
+            **result
         }), 200
 
     except Exception as exc:
