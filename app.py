@@ -12,10 +12,11 @@ from database import (
     extract_urutan_pasaran,
 )
 import sl_engine as engine
+from analisis_waktu_routes import bp_analisis_waktu
 
 app = Flask(__name__)
 app.secret_key = "local-demo-only-change-me"
-from analisis_waktu_routes import bp_analisis_waktu
+
 app.register_blueprint(bp_analisis_waktu)
 
 init_db()
