@@ -50,9 +50,13 @@ def api_tabel():
     zona2 = request.args.get("zona2", default="", type=str).strip()
     zona3 = request.args.get("zona3", default="", type=str).strip()
     n_digit = request.args.get("n", default=7, type=int)
+    # "YYYY-MM-DD" dari <input type="date"> di analisis_waktu.html.
+    # Kosong berarti "sampai sekarang" (perilaku lama) -- lihat
+    # get_rows_as_of() di database.py.
+    tanggal = request.args.get("tanggal", default="", type=str).strip()
 
     if not kode:
         return jsonify({"error": "Pasaran (Ddwn1) belum dipilih."}), 400
 
-    tabel = bangun_tabel(kode, zona1, zona2, zona3, n_digit)
-    return jsonify({"kode": kode, "n_digit": n_digit, "tabel": tabel})
+    tabel = bangun_tabel(kode, zona1, zona2, zona3, n_digit, tanggal_acuan=tanggal or None)
+    return jsonify({"kode": kode, "n_digit": n_digit, "tanggal_acuan": tanggal or None, "tabel": tabel})
