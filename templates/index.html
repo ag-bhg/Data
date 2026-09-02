@@ -34,17 +34,36 @@
 
   <!-- Dropdown periode, seperti dropdown "Semua / <nama pasaran>"
        di situs sumber. Auto-submit lewat GET ke "/" begitu dipilih,
-       tabel & pager langsung mengikuti periode terpilih. -->
+       tabel & pager langsung mengikuti periode terpilih. Badge
+       ✓/⚠ di depan tiap opsi = status dari get_kode_pasaran_status()
+       (lihat database.py) -- cuma muncul untuk kode yang ada
+       jadwalnya. -->
   <form method="get" action="{{ url_for('index') }}" class="filter-periode">
     <label for="kode-top">Periode:</label>
     <select name="kode" id="kode-top" onchange="this.form.submit()">
       <option value="" {% if not selected_kode %}selected{% endif %}>Semua</option>
       {% for k in kode_options %}
-      <option value="{{ k }}" {% if k == selected_kode %}selected{% endif %}>{{ k }}</option>
+      {% set st = kode_status.get(k) %}
+      <option value="{{ k }}" {% if k == selected_kode %}selected{% endif %}>{% if st %}{% if st.telat == True %}⚠ {% elif st.telat == False %}✓ {% endif %}{% endif %}{{ k }}</option>
       {% endfor %}
     </select>
     <noscript><button type="submit">Tampilkan</button></noscript>
   </form>
+
+  {% if selected_kode %}
+    {% if selected_info %}
+    <p><small>
+      {{ selected_info.nama }} — Tutup: {{ selected_info.tutup }} · Hasil: {{ selected_info.hasil }}
+      {% if selected_info.telat == True %}
+        · ⚠ Terlambat (terakhir update: {{ selected_info.terakhir or "belum pernah" }})
+      {% elif selected_info.telat == False %}
+        · ✓ Sudah update hari ini
+      {% endif %}
+    </small></p>
+    {% else %}
+    <p><small>Jadwal untuk periode "{{ selected_kode }}" belum tersedia.</small></p>
+    {% endif %}
+  {% endif %}
 
   {% with messages = get_flashed_messages(with_categories=true) %}
     {% for category, message in messages %}
