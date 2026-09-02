@@ -7,6 +7,7 @@ from database import (
     get_rows,
     count_rows,
     get_kode_pasaran_options,
+    get_kode_pasaran_status,
     extract_kode_pasaran,
     extract_urutan_pasaran,
 )
@@ -38,6 +39,14 @@ def index():
     total = count_rows(kode=kode or None)
     kode_options = get_kode_pasaran_options()
 
+    # Status jadwal (jam tutup/hasil + telat/tidak) per kode --
+    # dipakai buat badge di dropdown DAN panel info saat 1 periode
+    # difilter. Cuma mencakup kode yang ada di JADWAL_PASARAN (lihat
+    # database.py) -- kode lain (belum sempat dipetakan manual)
+    # tetap muncul di dropdown, cuma tanpa badge/info jadwal.
+    kode_status = get_kode_pasaran_status()
+    selected_info = kode_status.get(kode) if kode else None
+
     pages = max(1, (total + per_page - 1) // per_page)
 
     resp = render_template(
@@ -47,7 +56,9 @@ def index():
         pages=pages,
         total=total,
         kode_options=kode_options,
-        selected_kode=kode
+        selected_kode=kode,
+        kode_status=kode_status,
+        selected_info=selected_info
     )
 
     response = app.make_response(resp)
@@ -331,6 +342,34 @@ def api_sync():
 # ?limit=N membatasi jumlah nomor yang dikembalikan setelah
 # difilter (default 500, maksimal 2000).
 # =========================================================
+
+@app.get("/api/status-pasaran")
+def api_status_pasaran():
+    """
+    Status "sudah update / telat" tiap pasaran yang ada jadwalnya,
+    dibandingkan jam hasil vs data terakhir tersimpan. Dipakai
+    buat pemantauan manual (cek cepat pasaran mana yang datanya
+    belum masuk padahal harusnya sudah), dan sumber data yang sama
+    dipakai buat badge di dropdown periode "/".
+    """
+    try:
+        status = get_kode_pasaran_status()
+
+        resp = jsonify({
+            "ok": True,
+            "status": status
+        })
+
+    except Exception as exc:
+        resp = jsonify({
+            "ok": False,
+            "error": str(exc)
+        })
+
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+
+    return resp
+
 
 @app.get("/api/kode-pasaran")
 def api_kode_pasaran():
