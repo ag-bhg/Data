@@ -29,6 +29,12 @@
     background:var(--panel2); color:var(--text); font-size:.9rem;
   }
   .grid3{display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:8px}
+  input[type="date"]{
+    width:100%; padding:10px; border-radius:8px; border:1px solid var(--line);
+    background:var(--panel2); color:var(--text); font-size:.9rem;
+    color-scheme:dark; font-family:inherit;
+  }
   .btn-tampilkan{
     margin-top:6px; width:100%; padding:12px; border:none; border-radius:10px;
     background:var(--blue); color:#fff; font-size:.95rem; font-weight:600;
@@ -94,9 +100,15 @@
   <p class="sub">Angka terbaik = digit 0-9 paling sering hadir (gabungan semua pasaran satu zona, tanggal yang sama).</p>
 
   <div class="card">
-    <div class="field">
-      <label>Ddwn1 — Pilih Pasaran</label>
-      <select id="ddwn1"><option value="">Memuat...</option></select>
+    <div class="grid2">
+      <div class="field">
+        <label>Ddwn1 — Pilih Pasaran</label>
+        <select id="ddwn1"><option value="">Memuat...</option></select>
+      </div>
+      <div class="field">
+        <label>Pilih Tanggal</label>
+        <input type="date" id="tanggalAcuan">
+      </div>
     </div>
 
     <div class="grid3">
@@ -155,8 +167,13 @@ const ddwn2 = document.getElementById('ddwn2');
 const ddwn3 = document.getElementById('ddwn3');
 const ddwn4 = document.getElementById('ddwn4');
 const ddwn5 = document.getElementById('ddwn5');
+const tanggalAcuan = document.getElementById('tanggalAcuan');
 const hasilCard = document.getElementById('hasilCard');
 const tbodyHasil = document.getElementById('tbodyHasil');
+
+// Default: hari ini -- sama seperti perilaku sebelumnya sebelum ada
+// pilihan tanggal. User tetap bisa ganti ke tanggal lain.
+tanggalAcuan.valueAsDate = new Date();
 
 function isiDropdownZona(select, zonaList){
   select.innerHTML = '<option value="">Pilih zona</option>' +
@@ -185,6 +202,7 @@ document.getElementById('btnTampilkan').onclick = () => {
     zona2: ddwn3.value,
     zona3: ddwn4.value,
     n: ddwn5.value,
+    tanggal: tanggalAcuan.value,
   });
 
   hasilCard.style.display = 'block';
