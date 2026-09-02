@@ -1,5 +1,11 @@
 import os
 import re
+from datetime import datetime, timedelta
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover — fallback kalau tzdata tak tersedia
+    ZoneInfo = None
 
 import psycopg2
 import psycopg2.extras
@@ -461,3 +467,226 @@ def get_max_sort_key():
         return row["sort_key"] if row else None
     finally:
         conn.close()
+
+
+# =========================================================
+# JADWAL JAM TUTUP & JAM HASIL PER PASARAN
+#
+# Sumber: daftar jam yang diberikan user (dari halaman "Jadwal
+# Operasional" tiap m=ID di situs sumber), dicocokkan manual ke
+# kode pasaran (hasil extract_kode_pasaran) satu-satu dan sudah
+# dikonfirmasi user. Data statis -- disimpan sebagai dict Python
+# di sini, BUKAN tabel database, karena jarang berubah.
+#
+# "hari": None berarti "Setiap hari". Kalau diisi (frozenset nama
+# hari Indonesia), pasaran itu LIBUR di luar hari yang disebut.
+#
+# "draws": list (jam_tutup, jam_hasil) -- hampir semua cuma 1
+# pasang, KECUALI KK (KINGKONG) yang jalan 2x sehari.
+#
+# Semua jam dalam WIB.
+# =========================================================
+
+JADWAL_PASARAN = {
+    "TTM 13:00": {"nama": "TOTO MACAU 13:00", "draws": [("13:00", "13:15")], "hari": None},
+    "TTM 00:00": {"nama": "TOTO MACAU 00:00", "draws": [("00:00", "00:15")], "hari": None},
+    "TTM 16:00": {"nama": "TOTO MACAU 16:00", "draws": [("16:00", "16:15")], "hari": None},
+    "TTM 19:00": {"nama": "TOTO MACAU 19:00", "draws": [("19:00", "19:15")], "hari": None},
+    "TTM 22:00": {"nama": "TOTO MACAU 22:00", "draws": [("22:00", "22:15")], "hari": None},
+    "TTM 23:00": {"nama": "TOTO MACAU 23:00", "draws": [("23:00", "23:15")], "hari": None},
+    "HK":   {"nama": "HONGKONG",       "draws": [("22:45", "23:00")], "hari": None},
+    "HKE":  {"nama": "HONGKONGEVE",    "draws": [("18:15", "18:30")], "hari": None},
+    "HKL":  {"nama": "HONGKONG LOTTO", "draws": [("22:45", "23:00")], "hari": None},
+    "SYD":  {"nama": "SYDNEY",         "draws": [("13:30", "13:50")], "hari": None},
+    "SDYL": {"nama": "SYDNEY LOTTO",   "draws": [("13:30", "13:50")], "hari": None},
+    "SG":   {"nama": "SINGAPORE",      "draws": [("17:30", "17:45")],
+             "hari": frozenset({"Senin", "Rabu", "Kamis", "Sabtu", "Minggu"})},
+    "OR1":  {"nama": "OREGON 1", "draws": [("02:45", "03:00")], "hari": None},
+    "OR2":  {"nama": "OREGON 2", "draws": [("05:45", "06:00")], "hari": None},
+    "OR3":  {"nama": "OREGON 3", "draws": [("08:45", "09:00")], "hari": None},
+    "OR4":  {"nama": "OREGON 4", "draws": [("11:45", "12:05")], "hari": None},
+    "GGM":  {"nama": "GEORGIA MID", "draws": [("23:15", "23:30")], "hari": None},
+    "GEOE": {"nama": "GEORGIA EVE", "draws": [("05:45", "06:00")], "hari": None},
+    "GEON": {"nama": "GEORGIA NGT", "draws": [("10:20", "10:35")], "hari": None},
+    "MRM":  {"nama": "MARYLAND MID", "draws": [("23:15", "23:30")], "hari": None},
+    "MLE":  {"nama": "MARYLAND EVE", "draws": [("06:40", "06:55")], "hari": None},
+    "OHM":  {"nama": "OHIO MID", "draws": [("23:15", "23:30")], "hari": None},
+    "OHIE": {"nama": "OHIO EVE", "draws": [("06:15", "06:30")], "hari": None},
+    "ORL":  {"nama": "ORLANDO", "draws": [("00:30", "00:40")], "hari": None},
+    "NJM":  {"nama": "NEW JERSEY MID", "draws": [("23:45", "00:00")], "hari": None},
+    "NJE":  {"nama": "NEW JERSEY EVE", "draws": [("09:45", "10:00")], "hari": None},
+    "MICM": {"nama": "MICHIGAN MID", "draws": [("23:45", "00:00")], "hari": None},
+    "MICE": {"nama": "MICHIGAN EVE", "draws": [("06:15", "06:30")], "hari": None},
+    "TRK":  {"nama": "TURKI", "draws": [("01:10", "01:25")], "hari": None},
+    "INDM": {"nama": "INDIANA MID", "draws": [("00:05", "00:20")], "hari": None},
+    "INDE": {"nama": "INDIANA EVE", "draws": [("09:35", "10:05")], "hari": None},
+    "KTM":  {"nama": "KENTUCKY MID", "draws": [("00:05", "00:20")], "hari": None},
+    "KTE":  {"nama": "KENTUCKY EVE", "draws": [("09:45", "10:00")], "hari": None},
+    "TENM": {"nama": "TENNESSE MID", "draws": [("00:05", "00:20")],
+              "hari": frozenset({"Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"})},
+    "TENE": {"nama": "TENNESSE EVE", "draws": [("06:00", "06:20")], "hari": None},
+    "TENMD": {"nama": "TENNESSE MOR", "draws": [("21:05", "21:20")],
+              "hari": frozenset({"Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"})},
+    "BLRS": {"nama": "BELARUS", "draws": [("01:20", "01:30")], "hari": None},
+    "TXD":  {"nama": "TEXAS DAY", "draws": [("00:15", "00:30")],
+             "hari": frozenset({"Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"})},
+    "TXSE": {"nama": "TEXAS EVE", "draws": [("05:45", "06:00")],
+             "hari": frozenset({"Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"})},
+    "TXSN": {"nama": "TEXAS NGT", "draws": [("09:55", "10:05")],
+             "hari": frozenset({"Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"})},
+    "TXSM": {"nama": "TEXAS MOR", "draws": [("21:45", "22:00")],
+             "hari": frozenset({"Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"})},
+    "FLRM": {"nama": "FLORIDA MID", "draws": [("00:15", "00:30")], "hari": None},
+    "FLRE": {"nama": "FLORIDA EVE", "draws": [("08:30", "08:45")], "hari": None},
+    "ILM":  {"nama": "ILLINOIS MID", "draws": [("00:25", "00:40")], "hari": None},
+    "ILE":  {"nama": "ILLINOIS EVE", "draws": [("09:05", "09:40")], "hari": None},
+    "MISM": {"nama": "MISSOURI MID", "draws": [("00:30", "00:45")], "hari": None},
+    "MISE": {"nama": "MISSOURI EVE", "draws": [("08:40", "09:00")], "hari": None},
+    "DELD": {"nama": "DELAWARE DAY", "draws": [("00:40", "01:00")], "hari": None},
+    "DLWN": {"nama": "DELAWARE NGT", "draws": [("06:40", "06:55")], "hari": None},
+    "VIRD": {"nama": "VIRGINIA DAY", "draws": [("00:40", "01:00")], "hari": None},
+    "VIRN": {"nama": "VIRGINIA NGT", "draws": [("09:40", "10:00")], "hari": None},
+    "WDM":  {"nama": "WASHINGTON MID", "draws": [("00:40", "01:00")], "hari": None},
+    "WDE":  {"nama": "WASHINGTON EVE", "draws": [("06:40", "06:55")], "hari": None},
+    "RM":   {"nama": "ROMA", "draws": [("02:00", "02:10")], "hari": None},
+    "NYM":  {"nama": "NEWYORK MID", "draws": [("01:10", "01:30")], "hari": None},
+    "NYE":  {"nama": "NEW YORK EVE", "draws": [("09:10", "09:30")], "hari": None},
+    "HELS": {"nama": "HELSINKI", "draws": [("02:25", "02:35")], "hari": None},
+    "CRD":  {"nama": "CAROLINE DAY", "draws": [("01:45", "02:00")], "hari": None},
+    "CRE":  {"nama": "CAROLINE EVE", "draws": [("10:05", "10:20")], "hari": None},
+    "PNM":  {"nama": "PANAMA", "draws": [("03:00", "03:10")], "hari": None},
+    "YSLM": {"nama": "YERUSALEM", "draws": [("03:20", "03:30")], "hari": None},
+    "POL":  {"nama": "POLANDIA", "draws": [("03:40", "03:50")], "hari": None},
+    "NWC":  {"nama": "NEWCASTLE", "draws": [("05:00", "05:10")], "hari": None},
+    "DET":  {"nama": "DETROIT", "draws": [("05:50", "06:00")], "hari": None},
+    "HWI":  {"nama": "HAWAII", "draws": [("06:00", "06:10")], "hari": None},
+    "GDC":  {"nama": "GOLDCOAST", "draws": [("06:30", "06:40")], "hari": None},
+    "TKY":  {"nama": "TOKYO", "draws": [("07:30", "07:40")], "hari": None},
+    "PP":   {"nama": "PAPUA", "draws": [("08:10", "08:20")], "hari": None},
+    "MXC":  {"nama": "MEXICO", "draws": [("09:15", "09:25")], "hari": None},
+    "SZ":   {"nama": "SHENZHEN", "draws": [("09:40", "09:50")], "hari": None},
+    "SHG":  {"nama": "SHANGHAI", "draws": [("10:00", "10:10")], "hari": None},
+    "TW":   {"nama": "TAIWAN", "draws": [("20:30", "20:45")], "hari": None},
+    "TWM":  {"nama": "TAIWANMOR", "draws": [("10:15", "10:30")], "hari": None},
+    "HCM":  {"nama": "HOCHIMINH", "draws": [("11:00", "11:10")], "hari": None},
+    "MNL":  {"nama": "MANILA", "draws": [("11:15", "11:30")], "hari": None},
+    "BSN":  {"nama": "BUSAN", "draws": [("12:00", "12:10")], "hari": None},
+    "VTM":  {"nama": "VIETNAM", "draws": [("12:15", "12:25")], "hari": None},
+    "MND":  {"nama": "MANADO", "draws": [("13:00", "13:10")], "hari": None},
+    "BLI":  {"nama": "BOLAI", "draws": [("14:10", "14:20")], "hari": None},
+    "HNO":  {"nama": "HANOI", "draws": [("14:25", "14:35")], "hari": None},
+    "PH":   {"nama": "PHILIPHINE", "draws": [("15:05", "15:15")], "hari": None},
+    "CHN":  {"nama": "CHINA", "draws": [("15:15", "15:30")], "hari": None},
+    "BJI":  {"nama": "BEIJING", "draws": [("16:10", "16:20")], "hari": None},
+    "KR":   {"nama": "KOREA", "draws": [("16:30", "16:40")], "hari": None},
+    "KK":   {"nama": "KINGKONG", "draws": [("17:00", "17:10"), ("23:30", "23:40")], "hari": None},
+    "JP":   {"nama": "JAPAN", "draws": [("17:00", "17:20")], "hari": None},
+    "DXB":  {"nama": "DUBAI", "draws": [("00:15", "00:25")], "hari": None},
+    "KBJ":  {"nama": "KAMBOJA", "draws": [("19:00", "19:15")], "hari": None},
+    "JJ":   {"nama": "JEJU", "draws": [("19:30", "19:40")], "hari": None},
+    "PEN":  {"nama": "PENANG", "draws": [("20:00", "20:10")], "hari": None},
+    "PCSO": {"nama": "PCSO", "draws": [("19:45", "20:15")],
+             "hari": frozenset({"Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"})},
+    "LDN":  {"nama": "LONDON", "draws": [("21:00", "21:10")], "hari": None},
+    "BLG":  {"nama": "BULGARIA", "draws": [("23:30", "23:40")], "hari": None},
+    "CD":   {"nama": "CAMBODIA", "draws": [("11:35", "11:50")], "hari": None},
+    "BUE":  {"nama": "BULLSEYE", "draws": [("12:50", "13:10")], "hari": None},
+}
+
+WIB = ZoneInfo("Asia/Jakarta") if ZoneInfo else None
+
+HARI_INDO = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"]
+
+TOLERANSI_TELAT_MENIT = 15
+
+
+def get_jadwal(kode):
+    """
+    Info jadwal 1 kode pasaran (nama, jam tutup/hasil per draw,
+    hari aktif) -- dipakai buat panel info saat 1 periode difilter
+    di "/". None kalau kode-nya belum ada di JADWAL_PASARAN (mis.
+    pasaran baru yang belum sempat ditambahkan manual).
+    """
+    return JADWAL_PASARAN.get(kode)
+
+
+def get_kode_pasaran_status():
+    """
+    Status "sudah update / telat" untuk tiap kode pasaran yang
+    ADA JADWALNYA, dibandingkan jam hasil di JADWAL_PASARAN vs
+    data terakhir tersimpan (sync_state, lewat get_pasaran_progress).
+
+    Return: {kode: {"nama", "tutup", "hasil", "telat", "terakhir"}}
+    - "tutup"/"hasil": gabungan semua draw hari ini, dipisah koma
+      (biasanya cuma 1, KECUALI KK yang 2x sehari)
+    - "telat": True (sudah lewat jam + toleransi tapi belum ada
+      data hari ini), False (sudah update hari ini), atau None
+      (belum waktunya / pasaran libur hari ini -- BUKAN status
+      buruk, cuma belum bisa dinilai)
+    - "terakhir": tanggal draw terakhir tersimpan, format
+      "DD-MM-YYYY", atau None kalau belum pernah ada data sama
+      sekali
+
+    CATATAN: perbandingan disederhanakan per-hari-kalender WIB,
+    tidak menangani kasus lintas tengah malam yang presisi (draw
+    jam 00:xx dianggap "milik" hari kalender itu juga). Cukup
+    untuk indikator "kelihatannya telat" di tampilan, bukan alat
+    otomasi presisi tinggi.
+    """
+    if WIB is None:
+        return {}
+
+    now = datetime.now(WIB)
+    today = now.date()
+    weekday_name = HARI_INDO[now.weekday()]
+
+    progress = get_pasaran_progress()
+
+    status = {}
+
+    for kode, info in JADWAL_PASARAN.items():
+        aktif_hari_ini = info["hari"] is None or weekday_name in info["hari"]
+
+        sort_key = progress.get(kode)
+        terakhir_date = None
+        if sort_key:
+            try:
+                terakhir_date = datetime.strptime(
+                    sort_key.split("_")[0], "%Y-%m-%d"
+                ).date()
+            except ValueError:
+                terakhir_date = None
+
+        tutup_str = ", ".join(d[0] for d in info["draws"])
+        hasil_str_gabungan = ", ".join(d[1] for d in info["draws"])
+
+        if not aktif_hari_ini:
+            status[kode] = {
+                "nama": info["nama"],
+                "tutup": tutup_str,
+                "hasil": hasil_str_gabungan,
+                "telat": None,
+                "terakhir": terakhir_date.strftime("%d-%m-%Y") if terakhir_date else None,
+            }
+            continue
+
+        sudah_due = False
+        for _, hasil_jam in info["draws"]:
+            jam, menit = map(int, hasil_jam.split(":"))
+            hasil_dt = now.replace(hour=jam, minute=menit, second=0, microsecond=0)
+            batas = hasil_dt + timedelta(minutes=TOLERANSI_TELAT_MENIT)
+            if now >= batas:
+                sudah_due = True
+                break
+
+        telat = None if not sudah_due else (terakhir_date != today)
+
+        status[kode] = {
+            "nama": info["nama"],
+            "tutup": tutup_str,
+            "hasil": hasil_str_gabungan,
+            "telat": telat,
+            "terakhir": terakhir_date.strftime("%d-%m-%Y") if terakhir_date else None,
+        }
+
+    return status
