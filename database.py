@@ -274,7 +274,7 @@ def set_sync_state_raw(kode, sort_key):
         conn.close()
 
 
-MAX_ROWS_PER_PERIODE = 360
+MAX_ROWS_PER_PERIODE = 120
 
 
 def upsert_rows(rows):
@@ -288,14 +288,14 @@ def upsert_rows(rows):
 
     PEMBATAS DATA PER PERIODE: setelah baris baru ditulis, tiap
     kode pasaran yang KENA baris baru di batch ini langsung
-    dipangkas supaya tidak lebih dari MAX_ROWS_PER_PERIODE (360)
+    dipangkas supaya tidak lebih dari MAX_ROWS_PER_PERIODE (120)
     baris -- yang dibuang adalah data PALING LAMA (sort_key
     terkecil), model antrian FIFO: data baru selalu bisa masuk,
     yang paling lama otomatis tergeser keluar duluan.
 
     Cuma dijalankan untuk kode yang benar-benar dapat baris baru
     di batch ini (bukan scan ke-95 kode tiap kali sync) -- kode
-    lain yang kebetulan sudah lebih dari 360 (mis. sisa migrasi
+    lain yang kebetulan sudah lebih dari 120 (mis. sisa migrasi
     dari Firestore) baru ikut kepangkas begitu kode itu dapat
     baris baru berikutnya, bukan langsung sekaligus semua saat
     deploy ini.
@@ -409,6 +409,47 @@ def get_rows(page, per_page, kode=None):
                     """,
                     (per_page, offset),
                 )
+            rows = cur.fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_rows_as_of(kode, per_page, tanggal_acuan=None):
+    """
+    Ambil <per_page> baris TERBARU untuk 1 kode pasaran, dihitung
+    mundur dari tanggal_acuan (format "YYYY-MM-DD", cocok langsung
+    dengan nilai <input type="date">) -- bukan selalu dari data
+    paling baru/hari ini.
+
+    tanggal_acuan=None (atau string kosong) berarti "sampai
+    sekarang" -- balik ke perilaku get_rows() biasa.
+
+    Dipakai analisis_waktu.py: dulu tabel 30-draw-terakhir selalu
+    dihitung mundur dari data terbaru (== hari ini), sekarang bisa
+    dihitung mundur dari tanggal manapun yang dipilih user.
+
+    Perbandingan pakai LEFT(sort_key, 10) -- 10 karakter pertama
+    sort_key selalu "YYYY-MM-DD" (lihat compute_sort_key), jadi
+    ini murni bandingkan tanggal, tidak kena isu perbandingan
+    string pada bagian kode-periode setelahnya.
+    """
+    if not tanggal_acuan:
+        return get_rows(1, per_page, kode=kode)
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT tanggal, periode, nomor, source_url
+                FROM history
+                WHERE kode_pasaran = %s AND LEFT(sort_key, 10) <= %s
+                ORDER BY sort_key DESC
+                LIMIT %s;
+                """,
+                (kode, tanggal_acuan, per_page),
+            )
             rows = cur.fetchall()
         return [dict(r) for r in rows]
     finally:
