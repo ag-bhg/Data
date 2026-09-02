@@ -274,6 +274,9 @@ def set_sync_state_raw(kode, sort_key):
         conn.close()
 
 
+MAX_ROWS_PER_PERIODE = 360
+
+
 def upsert_rows(rows):
     """
     Simpan baris baru. Dedup dalam batch berdasarkan
@@ -282,6 +285,20 @@ def upsert_rows(rows):
     init_db() berperan sama seperti doc_id deterministik di
     Firestore dulu -- baris yang sama persis aman ditulis ulang,
     tidak akan dobel).
+
+    PEMBATAS DATA PER PERIODE: setelah baris baru ditulis, tiap
+    kode pasaran yang KENA baris baru di batch ini langsung
+    dipangkas supaya tidak lebih dari MAX_ROWS_PER_PERIODE (360)
+    baris -- yang dibuang adalah data PALING LAMA (sort_key
+    terkecil), model antrian FIFO: data baru selalu bisa masuk,
+    yang paling lama otomatis tergeser keluar duluan.
+
+    Cuma dijalankan untuk kode yang benar-benar dapat baris baru
+    di batch ini (bukan scan ke-95 kode tiap kali sync) -- kode
+    lain yang kebetulan sudah lebih dari 360 (mis. sisa migrasi
+    dari Firestore) baru ikut kepangkas begitu kode itu dapat
+    baris baru berikutnya, bukan langsung sekaligus semua saat
+    deploy ini.
     """
 
     unique_rows = {}
@@ -303,6 +320,7 @@ def upsert_rows(rows):
 
     conn = get_db_connection()
     changed = 0
+    kode_terpengaruh = set()
 
     try:
         with conn.cursor() as cur:
@@ -313,6 +331,7 @@ def upsert_rows(rows):
 
                 sort_key = compute_sort_key(tanggal, periode)
                 kode = extract_kode_pasaran(periode)
+                kode_terpengaruh.add(kode)
 
                 cur.execute(
                     """
@@ -330,6 +349,21 @@ def upsert_rows(rows):
                      sort_key, kode),
                 )
                 changed += 1
+
+            for kode in kode_terpengaruh:
+                cur.execute(
+                    """
+                    DELETE FROM history
+                    WHERE kode_pasaran = %s
+                      AND id NOT IN (
+                          SELECT id FROM history
+                          WHERE kode_pasaran = %s
+                          ORDER BY sort_key DESC
+                          LIMIT %s
+                      );
+                    """,
+                    (kode, kode, MAX_ROWS_PER_PERIODE),
+                )
         conn.commit()
     finally:
         conn.close()
