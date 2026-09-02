@@ -18,7 +18,7 @@ Depends on: database.py (get_db_connection, JADWAL_PASARAN, get_rows)
 
 from collections import Counter
 
-from database import get_db_connection, JADWAL_PASARAN, get_rows
+from database import get_db_connection, JADWAL_PASARAN, get_rows_as_of
 
 MIN_PASARAN_UNTUK_HITUNG = 7
 
@@ -153,11 +153,18 @@ def hitung_angka_terbaik(tanggal, opsi, zona_label, n_digit):
 # TABEL UTAMA: 30 draw terakhir pasaran acuan + 3 kolom opsi
 # =========================================================
 
-def bangun_tabel(kode_acuan, zona_opsi1, zona_opsi2, zona_opsi3, n_digit, jumlah_baris=30):
+def bangun_tabel(kode_acuan, zona_opsi1, zona_opsi2, zona_opsi3, n_digit,
+                  jumlah_baris=30, tanggal_acuan=None):
+    """
+    tanggal_acuan: "YYYY-MM-DD" opsional -- sumber datanya (30 draw
+    terakhir pasaran acuan) dihitung mundur dari tanggal ini.
+    None/kosong berarti dihitung mundur dari data terbaru (hari
+    ini), sama seperti perilaku sebelumnya.
+    """
     n_digit = max(4, min(int(n_digit), 9))
     jumlah_baris = max(1, min(int(jumlah_baris), 100))
 
-    rows = get_rows(page=1, per_page=jumlah_baris, kode=kode_acuan)  # terbaru dulu
+    rows = get_rows_as_of(kode_acuan, jumlah_baris, tanggal_acuan)  # terbaru dulu
 
     tabel = []
     for r in rows:
