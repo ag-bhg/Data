@@ -1,3 +1,4 @@
+urn hasil
 import os
 import re
 from datetime import datetime, timedelta, time as dtime
@@ -9,6 +10,7 @@ except ImportError:  # pragma: no cover — fallback kalau tzdata tak tersedia
 
 import psycopg2
 import psycopg2.extras
+from contextlib import contextmanager
 
 
 # =========================================================
@@ -40,17 +42,66 @@ def get_db_connection():
     "-pooler" di nama hostnya), BUKAN "Direct connection" --
     supaya banyak invocation serverless yang jalan bersamaan tidak
     kehabisan slot koneksi di sisi Postgres.
+
+    Sekalian set 2 timeout jaring-pengaman di level SESSION koneksi
+    ini (bukan ubah setting global Neon):
+    - statement_timeout: 1 query yang somehow lambat (mis. Neon
+      lagi cold start) dipotong paksa, tidak menahan koneksi lama.
+    - idle_in_transaction_session_timeout: kalau ada transaksi yang
+      lupa di-commit/rollback (mis. karena bug), Postgres yang
+      otomatis motong -- mencegah koneksi "nyangkut" dan
+      menghabiskan slot pooler.
     """
     dsn = os.environ.get("DATABASE_URL")
 
     if not dsn:
         raise RuntimeError("DATABASE_URL belum diset")
 
-    return psycopg2.connect(
+    conn = psycopg2.connect(
         dsn,
         sslmode="require",
         cursor_factory=psycopg2.extras.RealDictCursor,
     )
+    with conn.cursor() as cur:
+        cur.execute("SET statement_timeout = '10s';")
+        cur.execute("SET idle_in_transaction_session_timeout = '30s';")
+    conn.commit()
+    return conn
+
+
+@contextmanager
+def _borrow_connection(conn=None):
+    """
+    Dipakai SEMUA fungsi baca (get_rows, count_rows, dst) supaya
+    bisa jalan dengan 2 cara sekaligus tanpa 2 versi kode:
+
+    1) conn=None (perilaku LAMA, dipakai scraper.py/migrasi/dsb
+       yang jalan DI LUAR 1 siklus request Flask): bikin koneksi
+       baru sendiri di sini, tutup sendiri juga di sini setelah
+       selesai. Tidak ada yang berubah untuk pemanggil lama.
+
+    2) conn diisi (dipakai app.py lewat Flask `g`, 1 koneksi dipakai
+       bareng untuk beberapa query dalam 1 request "/"): pakai
+       persis koneksi yang dikasih, TIDAK ditutup di sini -- siklus
+       hidupnya milik pemanggil (app.py yang nutup lewat
+       teardown_request).
+
+    Dua-duanya: kalau ada error di tengah query, rollback dulu
+    sebelum error itu dilempar lagi -- supaya transaksi tidak
+    nyangkut di status "idle in transaction", baik untuk koneksi
+    sendiri maupun koneksi pinjaman.
+    """
+    owns_connection = conn is None
+    if owns_connection:
+        conn = get_db_connection()
+    try:
+        yield conn
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        if owns_connection:
+            conn.close()
 
 
 def extract_kode_pasaran(periode):
@@ -196,20 +247,19 @@ def init_db():
         conn.close()
 
 
-def get_pasaran_progress():
+def get_pasaran_progress(conn=None):
     """
     Ambil progres TERAKHIR per kode pasaran -- {kode: sort_key}.
     Sama perannya dengan versi Firestore, cuma sumbernya sekarang
     tabel "sync_state" di Postgres.
+
+    `conn`: opsional, lihat docstring _borrow_connection().
     """
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cur:
+    with _borrow_connection(conn) as c:
+        with c.cursor() as cur:
             cur.execute("SELECT kode_pasaran, sort_key FROM sync_state;")
             rows = cur.fetchall()
         return {r["kode_pasaran"]: r["sort_key"] for r in rows}
-    finally:
-        conn.close()
 
 
 def update_pasaran_progress(rows, known_progress):
@@ -387,7 +437,7 @@ def upsert_rows(rows):
     return changed
 
 
-def get_rows(page, per_page, kode=None):
+def get_rows(page, per_page, kode=None, conn=None):
     """
     Ambil satu halaman baris, diurutkan sort_key DESC (tanggal
     draw + periode -- dipakai fitur backend yang butuh urutan
@@ -397,13 +447,14 @@ def get_rows(page, per_page, kode=None):
     LIMIT/OFFSET native Postgres -- tidak ada lagi drama composite
     index seperti Firestore, cukup index (kode_pasaran, sort_key)
     yang sudah dibuat di init_db().
+
+    `conn`: opsional, lihat docstring _borrow_connection().
     """
 
     offset = (page - 1) * per_page
 
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cur:
+    with _borrow_connection(conn) as c:
+        with c.cursor() as cur:
             if kode:
                 cur.execute(
                     """
@@ -427,11 +478,9 @@ def get_rows(page, per_page, kode=None):
                 )
             rows = cur.fetchall()
         return [dict(r) for r in rows]
-    finally:
-        conn.close()
 
 
-def get_rows_as_of(kode, per_page, tanggal_acuan=None):
+def get_rows_as_of(kode, per_page, tanggal_acuan=None, conn=None):
     """
     Ambil <per_page> baris TERBARU untuk 1 kode pasaran, dihitung
     mundur dari tanggal_acuan (format "YYYY-MM-DD", cocok langsung
@@ -449,13 +498,14 @@ def get_rows_as_of(kode, per_page, tanggal_acuan=None):
     sort_key selalu "YYYY-MM-DD" (lihat compute_sort_key), jadi
     ini murni bandingkan tanggal, tidak kena isu perbandingan
     string pada bagian kode-periode setelahnya.
+
+    `conn`: opsional, lihat docstring _borrow_connection().
     """
     if not tanggal_acuan:
-        return get_rows(1, per_page, kode=kode)
+        return get_rows(1, per_page, kode=kode, conn=conn)
 
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cur:
+    with _borrow_connection(conn) as c:
+        with c.cursor() as cur:
             cur.execute(
                 """
                 SELECT tanggal, periode, nomor, source_url
@@ -468,23 +518,22 @@ def get_rows_as_of(kode, per_page, tanggal_acuan=None):
             )
             rows = cur.fetchall()
         return [dict(r) for r in rows]
-    finally:
-        conn.close()
 
 
-def get_rows_by_recency(page, per_page):
+def get_rows_by_recency(page, per_page, conn=None):
     """
     Sama seperti get_rows(), tapi diurutkan berdasarkan
     updated_at (kapan baris terakhir ditulis/disentuh), bukan
     sort_key. Dipertahankan untuk kompatibilitas -- tidak dipanggil
     di alur utama saat ini.
+
+    `conn`: opsional, lihat docstring _borrow_connection().
     """
 
     offset = (page - 1) * per_page
 
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cur:
+    with _borrow_connection(conn) as c:
+        with c.cursor() as cur:
             cur.execute(
                 """
                 SELECT tanggal, periode, nomor, source_url
@@ -496,21 +545,20 @@ def get_rows_by_recency(page, per_page):
             )
             rows = cur.fetchall()
         return [dict(r) for r in rows]
-    finally:
-        conn.close()
 
 
-def count_rows(kode=None):
+def count_rows(kode=None, conn=None):
     """
     Hitung total baris (opsional per kode pasaran). COUNT(*) biasa
     -- tidak ada lagi konsep "kuota per 1000 entri index" seperti
     aggregation query Firestore, dan untuk ukuran data proyek ini
     (belasan ribu baris) tetap cepat tanpa perlu index tambahan.
+
+    `conn`: opsional, lihat docstring _borrow_connection().
     """
 
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cur:
+    with _borrow_connection(conn) as c:
+        with c.cursor() as cur:
             if kode:
                 cur.execute(
                     "SELECT COUNT(*) AS total FROM history WHERE kode_pasaran = %s;",
@@ -520,44 +568,40 @@ def count_rows(kode=None):
                 cur.execute("SELECT COUNT(*) AS total FROM history;")
             row = cur.fetchone()
         return row["total"]
-    finally:
-        conn.close()
 
 
-def get_kode_pasaran_options():
+def get_kode_pasaran_options(conn=None):
     """
     Daftar semua kode pasaran yang tersedia, untuk isi dropdown
     periode di "/". Diambil dari tabel "sync_state" (kecil, 1 baris
     per kode pasaran), bukan scan tabel "history" yang besar.
+
+    `conn`: opsional, lihat docstring _borrow_connection().
     """
 
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cur:
+    with _borrow_connection(conn) as c:
+        with c.cursor() as cur:
             cur.execute("SELECT kode_pasaran FROM sync_state ORDER BY kode_pasaran;")
             rows = cur.fetchall()
         return [r["kode_pasaran"] for r in rows]
-    finally:
-        conn.close()
 
 
-def get_max_sort_key():
+def get_max_sort_key(conn=None):
     """
     Ambil sort_key TERBESAR (data terbaru) yang sudah tersimpan.
     Dipertahankan untuk kompatibilitas -- tidak dipanggil di alur
     utama saat ini (scraper.py pakai get_pasaran_progress()).
+
+    `conn`: opsional, lihat docstring _borrow_connection().
     """
 
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cur:
+    with _borrow_connection(conn) as c:
+        with c.cursor() as cur:
             cur.execute(
                 "SELECT sort_key FROM history ORDER BY sort_key DESC LIMIT 1;"
             )
             row = cur.fetchone()
         return row["sort_key"] if row else None
-    finally:
-        conn.close()
 
 
 # =========================================================
@@ -701,11 +745,14 @@ def get_jadwal(kode):
     return JADWAL_PASARAN.get(kode)
 
 
-def get_kode_pasaran_status():
+def get_kode_pasaran_status(conn=None):
     """
     Status "sudah update / telat" untuk tiap kode pasaran yang
     ADA JADWALNYA, dibandingkan jam hasil di JADWAL_PASARAN vs
     data terakhir tersimpan (sync_state, lewat get_pasaran_progress).
+
+    `conn`: opsional, lihat docstring _borrow_connection() --
+    diteruskan ke get_pasaran_progress() di bawah.
 
     Return: {kode: {"nama", "tutup", "hasil", "telat", "terakhir"}}
     - "tutup"/"hasil": gabungan semua draw hari ini, dipisah koma
@@ -731,7 +778,7 @@ def get_kode_pasaran_status():
     today = now.date()
     weekday_name = HARI_INDO[now.weekday()]
 
-    progress = get_pasaran_progress()
+    progress = get_pasaran_progress(conn=conn)
 
     status = {}
 
