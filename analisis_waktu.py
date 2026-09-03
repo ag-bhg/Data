@@ -18,7 +18,7 @@ Depends on: database.py (get_db_connection, JADWAL_PASARAN, get_rows)
 
 from collections import Counter
 
-from database import get_db_connection, JADWAL_PASARAN, get_rows_as_of
+from database import get_db_connection, JADWAL_PASARAN, get_rows_as_of, get_kode_pasaran_countdown
 
 MIN_PASARAN_UNTUK_HITUNG = 7
 
@@ -90,11 +90,30 @@ def kelompokkan_pasaran(opsi):
 
 
 def daftar_periode():
-    """Semua pasaran yang punya jadwal, buat isi Ddwn1. {kode, nama}."""
-    return [
-        {"kode": kode, "nama": info["nama"]}
-        for kode, info in sorted(JADWAL_PASARAN.items())
+    """
+    Semua pasaran yang punya jadwal, buat isi Ddwn1. Tiap entri:
+    {kode, nama, detik_menuju_hasil}, DIURUTKAN dari yang PALING
+    CEPAT result dulu (bukan alfabetis lagi) -- detik_menuju_hasil
+    dari get_kode_pasaran_countdown().
+
+    detik_menuju_hasil bisa None kalau somehow tidak ketemu jadwal
+    berikutnya dalam 8 hari ke depan (seharusnya tidak terjadi) --
+    entri begini ditaruh paling akhir, bukan bikin error.
+    """
+    countdown = get_kode_pasaran_countdown()
+
+    daftar = [
+        {
+            "kode": kode,
+            "nama": info["nama"],
+            "detik_menuju_hasil": countdown.get(kode),
+        }
+        for kode, info in JADWAL_PASARAN.items()
     ]
+
+    daftar.sort(key=lambda p: (p["detik_menuju_hasil"] is None, p["detik_menuju_hasil"]))
+
+    return daftar
 
 
 # =========================================================
