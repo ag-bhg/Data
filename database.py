@@ -175,6 +175,22 @@ def init_db():
                     sort_key TEXT NOT NULL
                 );
             """)
+            # Cache hasil "digit terbanyak" per (tanggal, opsi, zona)
+            # untuk fitur Analisis Angka per Zona Waktu -- lihat
+            # analisis_waktu.py. urutan_digit NULL berarti "sudah
+            # dihitung tapi belum cukup pasaran keluar" (bukan
+            # "belum pernah dihitung"), supaya tidak dihitung ulang
+            # sia-sia. Baris untuk tanggal HARI INI sengaja tidak
+            # pernah ditulis ke sini (datanya masih bisa berubah).
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS analisis_zona_cache (
+                    tanggal TEXT NOT NULL,
+                    opsi SMALLINT NOT NULL,
+                    zona_label TEXT NOT NULL,
+                    urutan_digit TEXT,
+                    PRIMARY KEY (tanggal, opsi, zona_label)
+                );
+            """)
         conn.commit()
     finally:
         conn.close()
@@ -769,28 +785,32 @@ def get_kode_pasaran_status():
 
 def get_kode_pasaran_countdown():
     """
-    Detik tersisa menuju jam hasil BERIKUTNYA untuk tiap kode
-    pasaran di JADWAL_PASARAN -- dipakai buat countdown & urutan
-    "paling cepat result dulu" di dropdown Ddwn1 (analisis_waktu).
+    Jam hasil BERIKUTNYA untuk tiap kode pasaran di JADWAL_PASARAN
+    -- dipakai buat urutan "paling cepat result dulu" + label jam
+    statis di dropdown Ddwn1 (analisis_waktu). Bukan countdown yang
+    perlu di-refresh tiap detik -- cuma dihitung sekali per request
+    halaman, ditulis apa adanya.
 
-    Return: {kode: detik_menuju_hasil} (int, selalu >= 0).
+    Return: {kode: {"detik": int (>=0), "jam_label": str}}
+    jam_label contoh: "22:15" (hari ini), "Besok 03:00", atau
+    "Senin 17:45" (lebih dari besok -- pasaran yang harinya
+    terbatas, mis. hari ini libur & baru aktif lagi beberapa hari
+    lagi).
 
     Cari maju sampai 8 hari ke depan (cukup untuk jadwal mingguan
     yang ada -- pasaran paling jarang tetap muncul beberapa kali
-    seminggu). Kode yang draw hari ini masih tersisa (belum lewat
-    jam) langsung ketemu di hari ke-0; yang sudah lewat semua jam
-    hasilnya hari ini, atau libur hari ini, lanjut cari ke hari
-    berikutnya. Kode yang somehow tidak ketemu dalam 8 hari
+    seminggu). Kode yang somehow tidak ketemu dalam 8 hari
     (seharusnya tidak terjadi) dilewati, tidak masuk hasil.
     """
     if WIB is None:
         return {}
 
     now = datetime.now(WIB)
-    countdown = {}
+    hasil = {}
 
     for kode, info in JADWAL_PASARAN.items():
         earliest = None
+        earliest_delta_hari = None
 
         for delta_hari in range(8):
             tanggal_cek = now.date() + timedelta(days=delta_hari)
@@ -805,11 +825,25 @@ def get_kode_pasaran_countdown():
 
                 if candidate > now and (earliest is None or candidate < earliest):
                     earliest = candidate
+                    earliest_delta_hari = delta_hari
 
             if earliest is not None:
                 break
 
-        if earliest is not None:
-            countdown[kode] = int((earliest - now).total_seconds())
+        if earliest is None:
+            continue
 
-    return countdown
+        jam_str = earliest.strftime("%H:%M")
+        if earliest_delta_hari == 0:
+            jam_label = jam_str
+        elif earliest_delta_hari == 1:
+            jam_label = f"Besok {jam_str}"
+        else:
+            jam_label = f"{HARI_INDO[earliest.weekday()]} {jam_str}"
+
+        hasil[kode] = {
+            "detik": int((earliest - now).total_seconds()),
+            "jam_label": jam_label,
+        }
+
+    return hasil
