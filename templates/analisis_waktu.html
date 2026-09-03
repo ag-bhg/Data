@@ -30,7 +30,6 @@
   }
   .grid3{display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px}
   .grid2{display:grid; grid-template-columns:1fr 1fr; gap:8px}
-  .countdown-selected{font-size:.8rem; color:var(--gold); margin-top:6px}
   input[type="date"]{
     width:100%; padding:10px; border-radius:8px; border:1px solid var(--line);
     background:var(--panel2); color:var(--text); font-size:.9rem;
@@ -105,7 +104,6 @@
       <div class="field">
         <label>Ddwn1 — Pilih Pasaran</label>
         <select id="ddwn1"><option value="">Memuat...</option></select>
-        <div class="countdown-selected" id="countdownSelected"></div>
       </div>
       <div class="field">
         <label>Pilih Tanggal</label>
@@ -172,50 +170,6 @@ const ddwn5 = document.getElementById('ddwn5');
 const tanggalAcuan = document.getElementById('tanggalAcuan');
 const hasilCard = document.getElementById('hasilCard');
 const tbodyHasil = document.getElementById('tbodyHasil');
-const countdownSelected = document.getElementById('countdownSelected');
-
-// {kode: timestamp_ms target result berikutnya} -- dihitung sekali
-// dari detik_menuju_hasil (snapshot waktu server) begitu opsi-tabel
-// selesai di-fetch, lalu dihitung mundur murni di klien tiap detik
-// (tidak nge-fetch ulang tiap detik).
-let targetMap = {};
-
-function formatHMS(sisaDetik){
-  if (sisaDetik < 0) sisaDetik = 0;
-  const h = Math.floor(sisaDetik / 3600);
-  const m = Math.floor((sisaDetik % 3600) / 60);
-  const s = Math.floor(sisaDetik % 60);
-  return [h, m, s].map(x => String(x).padStart(2, '0')).join(':');
-}
-
-function tickCountdown(){
-  const now = Date.now();
-
-  // Opsi A: teks di tiap <option> ikut diperbarui -- ini yang
-  // bikin kotak dropdown TERTUTUP menampilkan angka yang selalu
-  // jalan. Catatan: saat dropdown sedang DIBUKA (list-nya
-  // muncul), HP yang me-render list itu sendiri, bukan browser --
-  // jadi update ini tidak kelihatan sampai list ditutup lagi.
-  for (const opt of ddwn1.options){
-    const kode = opt.value;
-    if (!kode || !(kode in targetMap)) continue;
-    const sisaDetik = Math.round((targetMap[kode] - now) / 1000);
-    opt.text = `${opt.dataset.label} (${formatHMS(sisaDetik)})`;
-  }
-
-  // Opsi C: baris terpisah di bawah dropdown, SELALU live tanpa
-  // batasan native <select> di atas.
-  const kodeTerpilih = ddwn1.value;
-  if (kodeTerpilih && kodeTerpilih in targetMap){
-    const sisaDetik = Math.round((targetMap[kodeTerpilih] - now) / 1000);
-    countdownSelected.textContent = `Result dalam: ${formatHMS(sisaDetik)}`;
-  } else {
-    countdownSelected.textContent = '';
-  }
-}
-
-setInterval(tickCountdown, 1000);
-ddwn1.addEventListener('change', tickCountdown);
 
 // Default: hari ini -- sama seperti perilaku sebelumnya sebelum ada
 // pilihan tanggal. User tetap bisa ganti ke tanggal lain.
@@ -231,20 +185,14 @@ fetch('/api/analisis-waktu/opsi-tabel')
   .then(data => {
     // Urutan data.periode_list SUDAH dari server: paling cepat
     // result dulu (lihat daftar_periode() di analisis_waktu.py).
+    // jam_label ditulis SEKALI di sini dan tidak pernah diubah lagi
+    // -- tidak ada setInterval/refresh, supaya dropdown tidak
+    // kedip saat dibuka/ditutup dan tidak ada proses berjalan
+    // terus-menerus di browser.
     ddwn1.innerHTML = '<option value="">Pilih pasaran</option>' +
-      data.periode_list.map(p => {
-        const label = `${p.kode} — ${p.nama}`;
-        return `<option value="${p.kode}" data-label="${label}">${label}</option>`;
-      }).join('');
-
-    const now = Date.now();
-    targetMap = {};
-    data.periode_list.forEach(p => {
-      if (p.detik_menuju_hasil != null){
-        targetMap[p.kode] = now + p.detik_menuju_hasil * 1000;
-      }
-    });
-    tickCountdown();
+      data.periode_list.map(p =>
+        `<option value="${p.kode}">${p.kode} — ${p.nama} (${p.jam_label || '-'})</option>`
+      ).join('');
 
     isiDropdownZona(ddwn2, data.zona_opsi1);
     isiDropdownZona(ddwn3, data.zona_opsi2);
