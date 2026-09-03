@@ -1,9 +1,10 @@
 import os
 
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, g
 from scraper import sync_history
 from database import (
     init_db,
+    get_db_connection,
     get_rows,
     count_rows,
     get_kode_pasaran_options,
@@ -28,6 +29,39 @@ init_db()
 # "KK macet" di scraper.py).
 
 
+# =========================================================
+# REUSE 1 KONEKSI DB PER REQUEST (khusus route baca, mis. "/")
+#
+# Sebelumnya route "/" manggil 4 fungsi database.py yang
+# masing-masing bikin+tutup koneksi Postgres SENDIRI-SENDIRI --
+# artinya 4x TCP+TLS+auth handshake ke Neon dalam 1 kali buka
+# halaman. Sekarang cuma 1 koneksi yang dipinjamkan ke semua
+# fungsi lewat Flask `g` (khusus utk siklus 1 request ini).
+#
+# Dibikin LAZY (baru benar-benar connect saat get_request_conn()
+# dipanggil pertama kali) supaya route yang gak butuh DB sama
+# sekali (kalau ada nanti) gak ikut buka koneksi sia-sia.
+#
+# CATATAN: pola ini SENGAJA cuma dipakai di route baca. Endpoint
+# tulis (/api/cron, /api/manual-sync) dan scraper.py TETAP pakai
+# pola lama (get_db_connection() sendiri per panggilan, commit lalu
+# close) -- mereka jarang dipanggil & butuh siklus commit sendiri,
+# tidak perlu ikut dioptimasi ini.
+# =========================================================
+
+def get_request_conn():
+    if "db_conn" not in g:
+        g.db_conn = get_db_connection()
+    return g.db_conn
+
+
+@app.teardown_request
+def _close_request_conn(exc):
+    conn = g.pop("db_conn", None)
+    if conn is not None:
+        conn.close()
+
+
 @app.route("/")
 def index():
     page = max(1, request.args.get("page", 1, type=int))
@@ -38,16 +72,20 @@ def index():
     # dropdown situs sumber.
     kode = request.args.get("kode", "").strip()
 
-    rows = get_rows(page, per_page, kode=kode or None)
-    total = count_rows(kode=kode or None)
-    kode_options = get_kode_pasaran_options()
+    # 1 koneksi dipinjamkan ke 4 pemanggilan di bawah ini -- lihat
+    # catatan "REUSE 1 KONEKSI DB PER REQUEST" di atas.
+    conn = get_request_conn()
+
+    rows = get_rows(page, per_page, kode=kode or None, conn=conn)
+    total = count_rows(kode=kode or None, conn=conn)
+    kode_options = get_kode_pasaran_options(conn=conn)
 
     # Status jadwal (jam tutup/hasil + telat/tidak) per kode --
     # dipakai buat badge di dropdown DAN panel info saat 1 periode
     # difilter. Cuma mencakup kode yang ada di JADWAL_PASARAN (lihat
     # database.py) -- kode lain (belum sempat dipetakan manual)
     # tetap muncul di dropdown, cuma tanpa badge/info jadwal.
-    kode_status = get_kode_pasaran_status()
+    kode_status = get_kode_pasaran_status(conn=conn)
     selected_info = kode_status.get(kode) if kode else None
 
     pages = max(1, (total + per_page - 1) // per_page)
