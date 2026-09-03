@@ -1,6 +1,6 @@
 import os
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as dtime
 
 try:
     from zoneinfo import ZoneInfo
@@ -765,3 +765,51 @@ def get_kode_pasaran_status():
         }
 
     return status
+
+
+def get_kode_pasaran_countdown():
+    """
+    Detik tersisa menuju jam hasil BERIKUTNYA untuk tiap kode
+    pasaran di JADWAL_PASARAN -- dipakai buat countdown & urutan
+    "paling cepat result dulu" di dropdown Ddwn1 (analisis_waktu).
+
+    Return: {kode: detik_menuju_hasil} (int, selalu >= 0).
+
+    Cari maju sampai 8 hari ke depan (cukup untuk jadwal mingguan
+    yang ada -- pasaran paling jarang tetap muncul beberapa kali
+    seminggu). Kode yang draw hari ini masih tersisa (belum lewat
+    jam) langsung ketemu di hari ke-0; yang sudah lewat semua jam
+    hasilnya hari ini, atau libur hari ini, lanjut cari ke hari
+    berikutnya. Kode yang somehow tidak ketemu dalam 8 hari
+    (seharusnya tidak terjadi) dilewati, tidak masuk hasil.
+    """
+    if WIB is None:
+        return {}
+
+    now = datetime.now(WIB)
+    countdown = {}
+
+    for kode, info in JADWAL_PASARAN.items():
+        earliest = None
+
+        for delta_hari in range(8):
+            tanggal_cek = now.date() + timedelta(days=delta_hari)
+            weekday_name = HARI_INDO[tanggal_cek.weekday()]
+
+            if info["hari"] is not None and weekday_name not in info["hari"]:
+                continue
+
+            for _, hasil_jam in info["draws"]:
+                jam, menit = map(int, hasil_jam.split(":"))
+                candidate = datetime.combine(tanggal_cek, dtime(jam, menit), tzinfo=WIB)
+
+                if candidate > now and (earliest is None or candidate < earliest):
+                    earliest = candidate
+
+            if earliest is not None:
+                break
+
+        if earliest is not None:
+            countdown[kode] = int((earliest - now).total_seconds())
+
+    return countdown
