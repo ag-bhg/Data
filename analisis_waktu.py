@@ -17,8 +17,15 @@ Depends on: database.py (get_db_connection, JADWAL_PASARAN, get_rows)
 """
 
 from collections import Counter
+from datetime import datetime
 
-from database import get_db_connection, JADWAL_PASARAN, get_rows_as_of, get_kode_pasaran_countdown
+from database import (
+    get_db_connection,
+    JADWAL_PASARAN,
+    get_rows_as_of,
+    get_kode_pasaran_countdown,
+    WIB,
+)
 
 MIN_PASARAN_UNTUK_HITUNG = 7
 
@@ -92,13 +99,20 @@ def kelompokkan_pasaran(opsi):
 def daftar_periode():
     """
     Semua pasaran yang punya jadwal, buat isi Ddwn1. Tiap entri:
-    {kode, nama, detik_menuju_hasil}, DIURUTKAN dari yang PALING
-    CEPAT result dulu (bukan alfabetis lagi) -- detik_menuju_hasil
-    dari get_kode_pasaran_countdown().
+    {kode, nama, jam_label}, DIURUTKAN dari yang PALING CEPAT
+    result dulu (bukan alfabetis).
 
-    detik_menuju_hasil bisa None kalau somehow tidak ketemu jadwal
-    berikutnya dalam 8 hari ke depan (seharusnya tidak terjadi) --
-    entri begini ditaruh paling akhir, bukan bikin error.
+    jam_label itu STATIS (mis. "22:15" / "Besok 03:00") -- dihitung
+    sekali di server tiap kali endpoint ini dipanggil, BUKAN
+    countdown yang perlu di-refresh tiap detik di browser. Sengaja
+    begini supaya dropdown-nya tidak "kedip" (browser di HP
+    me-render ulang komponen <select> kalau isinya sering diubah
+    lewat JS, apalagi kalau lagi dibuka) dan tidak ada proses
+    background yang jalan terus-terusan di sisi klien.
+
+    Entri yang somehow tidak ketemu jadwal berikutnya dalam 8 hari
+    (seharusnya tidak terjadi) ditaruh paling akhir, bukan bikin
+    error.
     """
     countdown = get_kode_pasaran_countdown()
 
@@ -106,67 +120,132 @@ def daftar_periode():
         {
             "kode": kode,
             "nama": info["nama"],
-            "detik_menuju_hasil": countdown.get(kode),
+            "jam_label": countdown.get(kode, {}).get("jam_label"),
+            "_detik": countdown.get(kode, {}).get("detik"),
         }
         for kode, info in JADWAL_PASARAN.items()
     ]
 
-    daftar.sort(key=lambda p: (p["detik_menuju_hasil"] is None, p["detik_menuju_hasil"]))
+    daftar.sort(key=lambda p: (p["_detik"] is None, p["_detik"]))
+
+    for p in daftar:
+        del p["_detik"]  # cuma dipakai buat urutkan, tidak perlu dikirim ke frontend
 
     return daftar
 
 
 # =========================================================
-# AMBIL HASIL SEMUA PASARAN DI 1 ZONA, 1 TANGGAL
+# AMBIL/HITUNG RANKING DIGIT, DIBATCH PER OPSI (bukan per tanggal)
+# + DI-CACHE PERMANEN (kecuali tanggal hari ini)
+#
+# Hasil "digit terbanyak" untuk 1 kombinasi (tanggal, opsi, zona)
+# TIDAK PERNAH BERUBAH lagi begitu tanggalnya sudah lewat -- jadi
+# begitu pernah dihitung sekali, aman disimpan permanen dan dipakai
+# lagi dari pasaran acuan MANAPUN (Ddwn1 cuma menentukan tanggal
+# mana yang diminta, bukan isi hitungannya). Satu-satunya
+# pengecualian: tanggal HARI INI, karena datanya bisa masih
+# bertambah sepanjang hari itu -- tidak pernah di-cache.
 # =========================================================
 
-def _ambil_hasil_tanggal(conn, tanggal, kode_list):
-    """{kode_pasaran: nomor} -- 1 hasil per kode pada tanggal itu.
-    Kalau kode punya >1 draw/hari (mis. KK), diambil yang sort_key
-    paling besar (hasil paling akhir hari itu).
+def _hari_ini_str():
+    now = datetime.now(WIB) if WIB else datetime.now()
+    return now.strftime("%d-%m-%Y")  # format sama dengan history.tanggal
 
-    Menerima koneksi yang SUDAH DIBUKA (dari bangun_tabel) --
-    tidak buka/tutup koneksi sendiri, supaya 1 request tabel cuma
-    pakai 1 koneksi ke Postgres, bukan 1 koneksi baru tiap baris.
+
+def _hitung_ranking_dari_hasil(hasil_map):
     """
-    if not kode_list:
-        return {}
-
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT DISTINCT ON (kode_pasaran) kode_pasaran, nomor
-            FROM history
-            WHERE tanggal = %s AND kode_pasaran = ANY(%s)
-            ORDER BY kode_pasaran, sort_key DESC;
-            """,
-            (tanggal, kode_list),
-        )
-        rows = cur.fetchall()
-    return {r["kode_pasaran"]: r["nomor"] for r in rows}
-
-
-def hitung_angka_terbaik(conn, tanggal, opsi, zona_label, n_digit):
+    String 10 digit (semua 0-9, bukan cuma yang muncul) terurut
+    dari paling sering hadir -- None kalau < MIN_PASARAN_UNTUK_HITUNG
+    pasaran punya hasil. Simpan SEMUA 10 digit (bukan cuma n_digit)
+    supaya kalau Ddwn5 diganti, tinggal potong dari sini, tidak
+    perlu hitung ulang dari nol.
     """
-    None kalau belum memenuhi syarat (< MIN_PASARAN_UNTUK_HITUNG pasaran
-    sudah keluar di zona+tanggal itu). Kalau memenuhi, string N digit
-    (0-9) terurut dari paling sering muncul.
-    """
-    zona_pasaran = kelompokkan_pasaran(opsi).get(zona_label, [])
-    kode_list = [p["kode"] for p in zona_pasaran]
-
-    hasil_map = _ambil_hasil_tanggal(conn, tanggal, kode_list)
     if len(hasil_map) < MIN_PASARAN_UNTUK_HITUNG:
         return None
 
-    counter = Counter()
+    counter = Counter({str(d): 0 for d in range(10)})
     for nomor in hasil_map.values():
         for digit in str(nomor).strip().zfill(4)[-4:]:
             counter[digit] += 1
 
     ranking = sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))
-    top = [digit for digit, _ in ranking[:n_digit]]
-    return "".join(top)
+    return "".join(digit for digit, _ in ranking)
+
+
+def _ambil_ranking_batch(conn, tanggal_list, opsi, zona_label):
+    """
+    {tanggal: urutan_digit_atau_None} untuk SEMUA tanggal di
+    tanggal_list sekaligus, untuk 1 kombinasi (opsi, zona_label).
+
+    Alur:
+    1. Baca cache utk tanggal yg BUKAN hari ini -- biasanya kena
+       semua tanggal kecuali hari berjalan begitu cache "panas".
+    2. Sisanya (belum pernah ke-cache, atau memang hari ini)
+       dihitung lewat SATU query gabungan ke "history" (bukan 1
+       query per tanggal seperti sebelumnya).
+    3. Hasil yg BUKAN hari ini disimpan ke cache buat dipakai
+       lagi nanti -- dari pasaran acuan manapun, bukan cuma
+       request ini.
+    """
+    if not tanggal_list:
+        return {}
+
+    hari_ini = _hari_ini_str()
+    hasil = {}
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT tanggal, urutan_digit FROM analisis_zona_cache
+            WHERE opsi = %s AND zona_label = %s AND tanggal = ANY(%s);
+            """,
+            (opsi, zona_label, tanggal_list),
+        )
+        for row in cur.fetchall():
+            hasil[row["tanggal"]] = row["urutan_digit"]  # bisa None ("kurang data", tetap valid dari cache)
+
+    tanggal_belum_ada = [t for t in tanggal_list if t not in hasil]
+
+    if tanggal_belum_ada:
+        zona_pasaran = kelompokkan_pasaran(opsi).get(zona_label, [])
+        kode_list = [p["kode"] for p in zona_pasaran]
+
+        peta_per_tanggal = {t: {} for t in tanggal_belum_ada}
+
+        if kode_list:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT DISTINCT ON (tanggal, kode_pasaran)
+                        tanggal, kode_pasaran, nomor
+                    FROM history
+                    WHERE tanggal = ANY(%s) AND kode_pasaran = ANY(%s)
+                    ORDER BY tanggal, kode_pasaran, sort_key DESC;
+                    """,
+                    (tanggal_belum_ada, kode_list),
+                )
+                for row in cur.fetchall():
+                    peta_per_tanggal[row["tanggal"]][row["kode_pasaran"]] = row["nomor"]
+
+        baris_cache_baru = []
+        for t in tanggal_belum_ada:
+            urutan = _hitung_ranking_dari_hasil(peta_per_tanggal[t])
+            hasil[t] = urutan
+            if t != hari_ini:
+                baris_cache_baru.append((t, opsi, zona_label, urutan))
+
+        if baris_cache_baru:
+            with conn.cursor() as cur:
+                cur.executemany(
+                    """
+                    INSERT INTO analisis_zona_cache (tanggal, opsi, zona_label, urutan_digit)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (tanggal, opsi, zona_label) DO NOTHING;
+                    """,
+                    baris_cache_baru,
+                )
+
+    return hasil
 
 
 # =========================================================
@@ -181,35 +260,48 @@ def bangun_tabel(kode_acuan, zona_opsi1, zona_opsi2, zona_opsi3, n_digit,
     None/kosong berarti dihitung mundur dari data terbaru (hari
     ini), sama seperti perilaku sebelumnya.
 
-    PERFORMA: 1 koneksi Postgres dibuka di sini dan dipakai
-    bersama untuk SELURUH baris + SELURUH opsi (lewat
-    hitung_angka_terbaik -> _ambil_hasil_tanggal). Sebelumnya tiap
-    baris x tiap opsi buka koneksi baru sendiri-sendiri -- untuk
-    30 baris x 3 opsi itu ~90 koneksi terpisah ke Neon dalam 1
-    request, cukup lambat untuk bikin request timeout (makanya
-    tabel nyangkut di "Memuat..." terus, bukan error yang
-    kelihatan).
+    PERFORMA: sebelumnya tiap baris x tiap opsi query terpisah ke
+    Postgres (12 baris x 3 opsi = 36 query per request). Sekarang
+    dibatch PER OPSI -- 1 query gabungan yang mencakup SEMUA
+    tanggal sekaligus (bukan 1 query per tanggal), ditambah cache
+    permanen di analisis_zona_cache (lihat _ambil_ranking_batch)
+    supaya tanggal yang sudah pernah dihitung dari pasaran acuan
+    manapun tidak perlu dihitung ulang. Hasil: turun dari sampai 36
+    query jadi paling banyak ~3 query per request (dan makin
+    sedikit lagi begitu cache-nya "panas").
     """
     n_digit = max(4, min(int(n_digit), 9))
     jumlah_baris = max(1, min(int(jumlah_baris), 100))
 
     rows = get_rows_as_of(kode_acuan, jumlah_baris, tanggal_acuan)  # terbaru dulu
+    tanggal_list = [r["tanggal"] for r in rows]
 
     conn = get_db_connection()
     try:
-        tabel = []
-        for r in rows:
-            tanggal = r["tanggal"]
-            baris = {
-                "tanggal": tanggal,
-                "periode": r["periode"],
-                "nomor": r["nomor"],
-                "opsi1": hitung_angka_terbaik(conn, tanggal, 1, zona_opsi1, n_digit) if zona_opsi1 else None,
-                "opsi2": hitung_angka_terbaik(conn, tanggal, 2, zona_opsi2, n_digit) if zona_opsi2 else None,
-                "opsi3": hitung_angka_terbaik(conn, tanggal, 3, zona_opsi3, n_digit) if zona_opsi3 else None,
-            }
-            tabel.append(baris)
+        peta_opsi = {}
+        if zona_opsi1:
+            peta_opsi[1] = _ambil_ranking_batch(conn, tanggal_list, 1, zona_opsi1)
+        if zona_opsi2:
+            peta_opsi[2] = _ambil_ranking_batch(conn, tanggal_list, 2, zona_opsi2)
+        if zona_opsi3:
+            peta_opsi[3] = _ambil_ranking_batch(conn, tanggal_list, 3, zona_opsi3)
+        conn.commit()  # simpan baris cache baru yang barusan ditulis
     finally:
         conn.close()
+
+    def _potong(urutan):
+        return urutan[:n_digit] if urutan else None
+
+    tabel = []
+    for r in rows:
+        t = r["tanggal"]
+        tabel.append({
+            "tanggal": t,
+            "periode": r["periode"],
+            "nomor": r["nomor"],
+            "opsi1": _potong(peta_opsi.get(1, {}).get(t)) if zona_opsi1 else None,
+            "opsi2": _potong(peta_opsi.get(2, {}).get(t)) if zona_opsi2 else None,
+            "opsi3": _potong(peta_opsi.get(3, {}).get(t)) if zona_opsi3 else None,
+        })
 
     return tabel
