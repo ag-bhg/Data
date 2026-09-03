@@ -1,4 +1,3 @@
-urn hasil
 import os
 import re
 from datetime import datetime, timedelta, time as dtime
