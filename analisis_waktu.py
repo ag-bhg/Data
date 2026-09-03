@@ -2,7 +2,7 @@
 Analisis Angka per Zona Waktu (v2 - "colok bebas per zona")
 =============================================================
 
-Untuk 1 pasaran acuan (Ddwn1), tampilkan 30 draw terakhirnya. Di tiap
+Untuk 1 pasaran acuan (Ddwn1), tampilkan 12 draw terakhirnya. Di tiap
 baris (1 tanggal draw), hitung "angka terbaik" (digit 0-9 yang paling
 sering hadir, digabung tanpa lihat posisi) dari SEMUA pasaran lain
 yang berada di zona waktu yang sama PADA TANGGAL ITU JUGA -- dihitung
@@ -101,32 +101,33 @@ def daftar_periode():
 # AMBIL HASIL SEMUA PASARAN DI 1 ZONA, 1 TANGGAL
 # =========================================================
 
-def _ambil_hasil_tanggal(tanggal, kode_list):
+def _ambil_hasil_tanggal(conn, tanggal, kode_list):
     """{kode_pasaran: nomor} -- 1 hasil per kode pada tanggal itu.
     Kalau kode punya >1 draw/hari (mis. KK), diambil yang sort_key
-    paling besar (hasil paling akhir hari itu)."""
+    paling besar (hasil paling akhir hari itu).
+
+    Menerima koneksi yang SUDAH DIBUKA (dari bangun_tabel) --
+    tidak buka/tutup koneksi sendiri, supaya 1 request tabel cuma
+    pakai 1 koneksi ke Postgres, bukan 1 koneksi baru tiap baris.
+    """
     if not kode_list:
         return {}
 
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT DISTINCT ON (kode_pasaran) kode_pasaran, nomor
-                FROM history
-                WHERE tanggal = %s AND kode_pasaran = ANY(%s)
-                ORDER BY kode_pasaran, sort_key DESC;
-                """,
-                (tanggal, kode_list),
-            )
-            rows = cur.fetchall()
-        return {r["kode_pasaran"]: r["nomor"] for r in rows}
-    finally:
-        conn.close()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT ON (kode_pasaran) kode_pasaran, nomor
+            FROM history
+            WHERE tanggal = %s AND kode_pasaran = ANY(%s)
+            ORDER BY kode_pasaran, sort_key DESC;
+            """,
+            (tanggal, kode_list),
+        )
+        rows = cur.fetchall()
+    return {r["kode_pasaran"]: r["nomor"] for r in rows}
 
 
-def hitung_angka_terbaik(tanggal, opsi, zona_label, n_digit):
+def hitung_angka_terbaik(conn, tanggal, opsi, zona_label, n_digit):
     """
     None kalau belum memenuhi syarat (< MIN_PASARAN_UNTUK_HITUNG pasaran
     sudah keluar di zona+tanggal itu). Kalau memenuhi, string N digit
@@ -135,7 +136,7 @@ def hitung_angka_terbaik(tanggal, opsi, zona_label, n_digit):
     zona_pasaran = kelompokkan_pasaran(opsi).get(zona_label, [])
     kode_list = [p["kode"] for p in zona_pasaran]
 
-    hasil_map = _ambil_hasil_tanggal(tanggal, kode_list)
+    hasil_map = _ambil_hasil_tanggal(conn, tanggal, kode_list)
     if len(hasil_map) < MIN_PASARAN_UNTUK_HITUNG:
         return None
 
@@ -150,33 +151,46 @@ def hitung_angka_terbaik(tanggal, opsi, zona_label, n_digit):
 
 
 # =========================================================
-# TABEL UTAMA: 30 draw terakhir pasaran acuan + 3 kolom opsi
+# TABEL UTAMA: 12 draw terakhir pasaran acuan + 3 kolom opsi
 # =========================================================
 
 def bangun_tabel(kode_acuan, zona_opsi1, zona_opsi2, zona_opsi3, n_digit,
-                  jumlah_baris=30, tanggal_acuan=None):
+                  jumlah_baris=12, tanggal_acuan=None):
     """
-    tanggal_acuan: "YYYY-MM-DD" opsional -- sumber datanya (30 draw
+    tanggal_acuan: "YYYY-MM-DD" opsional -- sumber datanya (12 draw
     terakhir pasaran acuan) dihitung mundur dari tanggal ini.
     None/kosong berarti dihitung mundur dari data terbaru (hari
     ini), sama seperti perilaku sebelumnya.
+
+    PERFORMA: 1 koneksi Postgres dibuka di sini dan dipakai
+    bersama untuk SELURUH baris + SELURUH opsi (lewat
+    hitung_angka_terbaik -> _ambil_hasil_tanggal). Sebelumnya tiap
+    baris x tiap opsi buka koneksi baru sendiri-sendiri -- untuk
+    30 baris x 3 opsi itu ~90 koneksi terpisah ke Neon dalam 1
+    request, cukup lambat untuk bikin request timeout (makanya
+    tabel nyangkut di "Memuat..." terus, bukan error yang
+    kelihatan).
     """
     n_digit = max(4, min(int(n_digit), 9))
     jumlah_baris = max(1, min(int(jumlah_baris), 100))
 
     rows = get_rows_as_of(kode_acuan, jumlah_baris, tanggal_acuan)  # terbaru dulu
 
-    tabel = []
-    for r in rows:
-        tanggal = r["tanggal"]
-        baris = {
-            "tanggal": tanggal,
-            "periode": r["periode"],
-            "nomor": r["nomor"],
-            "opsi1": hitung_angka_terbaik(tanggal, 1, zona_opsi1, n_digit) if zona_opsi1 else None,
-            "opsi2": hitung_angka_terbaik(tanggal, 2, zona_opsi2, n_digit) if zona_opsi2 else None,
-            "opsi3": hitung_angka_terbaik(tanggal, 3, zona_opsi3, n_digit) if zona_opsi3 else None,
-        }
-        tabel.append(baris)
+    conn = get_db_connection()
+    try:
+        tabel = []
+        for r in rows:
+            tanggal = r["tanggal"]
+            baris = {
+                "tanggal": tanggal,
+                "periode": r["periode"],
+                "nomor": r["nomor"],
+                "opsi1": hitung_angka_terbaik(conn, tanggal, 1, zona_opsi1, n_digit) if zona_opsi1 else None,
+                "opsi2": hitung_angka_terbaik(conn, tanggal, 2, zona_opsi2, n_digit) if zona_opsi2 else None,
+                "opsi3": hitung_angka_terbaik(conn, tanggal, 3, zona_opsi3, n_digit) if zona_opsi3 else None,
+            }
+            tabel.append(baris)
+    finally:
+        conn.close()
 
     return tabel
