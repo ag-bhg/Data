@@ -14,7 +14,7 @@ from flask import Blueprint, render_template, request, jsonify
 
 from analisis_waktu import (
     get_zona_list,
-    daftar_periode,
+    daftar_zona_pasaran,
     bangun_tabel,
 )
 
@@ -28,7 +28,7 @@ def halaman_analisis_waktu():
 
 @bp_analisis_waktu.route("/api/analisis-waktu/opsi-tabel")
 def api_opsi_tabel():
-    """Isi buat Ddwn1 (periode) & Ddwn2/Ddwn3/Ddwn4 (zona tiap opsi)."""
+    """Isi buat Ddwn1 (Zona Pasaran, BARU) & Ddwn2/Ddwn3/Ddwn4 (zona tiap opsi, tetap)."""
     def _zona_ringkas(opsi):
         return [
             {"label": label, "rentang": f"{mulai} - {akhir}"}
@@ -36,7 +36,7 @@ def api_opsi_tabel():
         ]
 
     return jsonify({
-        "periode_list": daftar_periode(),
+        "zona_pasaran_list": daftar_zona_pasaran(),
         "zona_opsi1": _zona_ringkas(1),
         "zona_opsi2": _zona_ringkas(2),
         "zona_opsi3": _zona_ringkas(3),
@@ -56,7 +56,7 @@ def api_tabel():
     tanggal = request.args.get("tanggal", default="", type=str).strip()
 
     if not kode:
-        return jsonify({"error": "Pasaran (Ddwn1) belum dipilih."}), 400
+        return jsonify({"error": "Zona Pasaran (Ddwn1) belum dipilih."}), 400
 
     tabel = bangun_tabel(kode, zona1, zona2, zona3, n_digit, tanggal_acuan=tanggal or None)
     return jsonify({"kode": kode, "n_digit": n_digit, "tanggal_acuan": tanggal or None, "tabel": tabel})
