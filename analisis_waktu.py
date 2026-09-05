@@ -317,138 +317,141 @@ def _ambil_ranking_batch(conn, tanggal_list, opsi, zona_label):
 # Zona Pasaran (Ddwn1 baru), bukan 1 pasaran acuan seperti dulu
 # =========================================================
 
-def ambil_riwayat_zona(conn, opsi, zona_label, jumlah_baris, tanggal_acuan=None):
+def ambil_pasaran_zona_per_tanggal(conn, opsi, zona_label, tanggal_target):
     """
-    N periode/draw terakhir (jumlah_baris) dari SEMUA pasaran yang
-    tergabung di 1 zona (opsi + zona_label) -- pengganti
-    get_rows_as_of(kode_acuan, ...) sekarang Ddwn1 memilih ZONA
-    (bisa banyak pasaran sekaligus), bukan 1 pasaran acuan. Ini
-    yang bikin isi tabel lebih relevan & tidak sekaligus me-list
-    ratusan pasaran yang tidak berkaitan dengan zona yang dipilih.
+    SEMUA pasaran anggota 1 zona (opsi + zona_label) untuk SATU
+    tanggal tertentu -- setiap anggota zona SELALU muncul 1 baris,
+    baik sudah ada hasilnya maupun belum (nomor=None -- caller
+    yang merender jadi "?"). Tidak dipotong ke N baris -- kalau
+    anggota zonanya banyak, itu tanggung jawab HTML buat bikin
+    tabelnya scroll, bukan datanya yang dipotong di sini.
 
-    tanggal_acuan: "YYYY-MM-DD" opsional, sama seperti
-    get_rows_as_of() -- batas ATAS tanggal yang diambil (None =
-    sampai data terbaru/hari ini).
+    tanggal_target: "dd-mm-yyyy" (format sama seperti history.tanggal).
 
     Untuk pasaran dengan >1 draw/hari (mis. "KK"), cuma draw yang
     urutan waktunya cocok ke zona INI yang diambil (lihat
     "urutan_draw" di kelompokkan_pasaran()) -- draw lain dari
     pasaran yang sama yang masuk zona LAIN tidak ikut kebawa,
     konsisten dengan perbaikan di _ambil_ranking_batch().
-
-    Kalau tanggal_acuan kosong/hari ini: pasaran anggota zona ini
-    yang HARI INI belum ada hasilnya di database ikut disisipkan
-    sebagai 1 baris "menunggu" per pasaran (nomor=None -- caller
-    yang merender jadi "?"), supaya kelihatan pasaran itu memang
-    belum draw, bukan cuma hilang dari tabel sampai hasilnya masuk.
     """
     zona_pasaran = kelompokkan_pasaran(opsi).get(zona_label, [])
+    if not zona_pasaran:
+        return []
+
     urutan_dibutuhkan = {p["kode"]: p["urutan_draw"] for p in zona_pasaran}
     kode_list = list(urutan_dibutuhkan)
 
-    if not kode_list:
-        return []
-
-    hari_ini_dmy = _hari_ini_str()  # dd-mm-yyyy, format history.tanggal
-    d, m, y = hari_ini_dmy.split("-")
-    hari_ini_ymd = f"{y}-{m}-{d}"  # yyyy-mm-dd, format tanggal_acuan/sort_key
-
-    batas_atas = tanggal_acuan or hari_ini_ymd
-    tampilkan_menunggu = (batas_atas == hari_ini_ymd)
-
-    baris = []
+    hasil_per_kode = {}
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT tanggal, kode_pasaran, periode, nomor, sort_key,
+            SELECT kode_pasaran, periode, nomor,
                    ROW_NUMBER() OVER (
-                       PARTITION BY tanggal, kode_pasaran
+                       PARTITION BY kode_pasaran
                        ORDER BY sort_key ASC
                    ) - 1 AS urutan_draw
             FROM history
-            WHERE kode_pasaran = ANY(%s) AND LEFT(sort_key, 10) <= %s
-            ORDER BY sort_key DESC
-            LIMIT %s;
+            WHERE tanggal = %s AND kode_pasaran = ANY(%s);
             """,
-            (kode_list, batas_atas, jumlah_baris * len(kode_list)),
+            (tanggal_target, kode_list),
         )
         for row in cur.fetchall():
             dibutuhkan = urutan_dibutuhkan.get(row["kode_pasaran"])
             if dibutuhkan is not None and row["urutan_draw"] == dibutuhkan:
-                baris.append({
-                    "tanggal": row["tanggal"],
+                hasil_per_kode[row["kode_pasaran"]] = {
                     "periode": row["periode"],
                     "nomor": row["nomor"],
-                    "kode_pasaran": row["kode_pasaran"],
-                    "sort_key": row["sort_key"],
-                })
+                }
 
-    baris.sort(key=lambda r: r["sort_key"], reverse=True)
-    baris = baris[:jumlah_baris]
+    # "selisih" cuma bermakna kalau tanggal_target = HARI INI --
+    # dipakai buat urutkan "yang belum keluar" (masih ada waktu
+    # sampai jam hasil) di atas, "yang sudah keluar" di bawah,
+    # sesuai penjelasan: jam hasil 12:00, sekarang 11:45 -> selisih
+    # +15 menit -> ini di atas (karena akan keluar sebentar lagi).
+    # Untuk tanggal SELAIN hari ini, tidak ada "belum keluar" yang
+    # relevan (semua sudah lewat) -- diurutkan kronologis biasa.
+    hari_ini_dmy = _hari_ini_str()
+    now_menit = None
+    if tanggal_target == hari_ini_dmy:
+        now = datetime.now(WIB) if WIB else datetime.now()
+        now_menit = now.hour * 60 + now.minute
 
-    if tampilkan_menunggu:
-        kode_sudah_ada_hari_ini = {
-            r["kode_pasaran"] for r in baris if r["tanggal"] == hari_ini_dmy
-        }
-        for p in zona_pasaran:
-            if p["kode"] not in kode_sudah_ada_hari_ini:
-                baris.append({
-                    "tanggal": hari_ini_dmy,
-                    "periode": f"{p['kode']} (menunggu)",
-                    "nomor": None,
-                    "kode_pasaran": p["kode"],
-                    "sort_key": f"{hari_ini_ymd}_9999999999",  # ditaruh paling atas hari ini
-                })
-        baris.sort(key=lambda r: r["sort_key"], reverse=True)
-        baris = baris[:jumlah_baris]
+    baris = []
+    for p in zona_pasaran:
+        data = hasil_per_kode.get(p["kode"])
+        selisih = (_menit(p["jam_hasil"]) - now_menit) if now_menit is not None else None
+        baris.append({
+            "tanggal": tanggal_target,
+            "periode": data["periode"] if data else f"{p['kode']} — {p['nama']}",
+            "nomor": data["nomor"] if data else None,
+            "_jam_hasil_menit": _menit(p["jam_hasil"]),
+            "_selisih": selisih,
+        })
+
+    def _kunci_urut(b):
+        if b["_selisih"] is None:
+            return (0, b["_jam_hasil_menit"])  # bukan hari ini -> kronologis biasa
+        if b["_selisih"] > 0:
+            return (0, b["_selisih"])          # belum lewat jam hasil -- makin dekat makin atas
+        return (1, -b["_selisih"])             # sudah lewat -- makin baru lewat makin atas kelompok ini
+
+    baris.sort(key=_kunci_urut)
+    for b in baris:
+        del b["_jam_hasil_menit"]
+        del b["_selisih"]
 
     return baris
 
 
 # =========================================================
-# TABEL UTAMA: N draw terakhir dari Zona Pasaran (Ddwn1) + 3 kolom
-# opsi (Opsi1/2/3, dari Ddwn2/3/4 -- tetap independen dari Ddwn1)
+# TABEL UTAMA: SEMUA pasaran di Zona Pasaran (Ddwn1) utk 1 tanggal
+# + 3 kolom opsi (Opsi1/2/3, dari Ddwn2/3/4 -- independen dari Ddwn1)
 # =========================================================
 
 def bangun_tabel(zona_pasaran_pilihan, zona_opsi1, zona_opsi2, zona_opsi3, n_digit,
-                  jumlah_baris=12, tanggal_acuan=None):
+                  tanggal_acuan=None):
     """
-    zona_pasaran_pilihan: value dari Ddwn1 BARU, mis. "Za2" -- kolom
-    Periode & Nomor sekarang diisi draw-draw dari SEMUA pasaran yang
-    tergabung di zona ini (lihat ambil_riwayat_zona()), bukan cuma 1
-    pasaran acuan seperti versi sebelumnya. Baris "menunggu" (belum
-    draw hari ini) muncul dengan nomor "?".
+    zona_pasaran_pilihan: value dari Ddwn1, mis. "Za2" -- baris
+    tabel = SEMUA pasaran anggota zona ini untuk 1 tanggal (lihat
+    ambil_pasaran_zona_per_tanggal()), diurutkan: yang belum keluar
+    hasilnya di atas (makin dekat jam hasilnya makin atas), yang
+    sudah keluar di bawah (makin baru keluar makin atas kelompok
+    itu). Tidak dibatasi jumlah baris -- kalau anggota zonanya
+    banyak, tabelnya di-scroll di HTML.
 
-    zona_opsi1/2/3, n_digit, jumlah_baris, tanggal_acuan: PERSIS
-    seperti sebelumnya -- kolom Opsi1/Opsi2/Opsi3 tetap dihitung
-    independen dari zona_pasaran_pilihan, berdasarkan TANGGAL tiap
-    baris, lewat Ddwn2/3/4 seperti biasa.
+    tanggal_acuan: "YYYY-MM-DD" opsional (dari <input type="date">
+    di HTML) -- tanggal PERSIS yang ditampilkan, bukan lagi batas
+    atas riwayat. None/kosong berarti hari ini.
 
-    PERFORMA: sama seperti sebelumnya -- dibatch PER OPSI (bukan per
-    tanggal), ditambah cache permanen di analisis_zona_cache (lihat
-    _ambil_ranking_batch) supaya tanggal yang sudah pernah dihitung
-    dari zona pasaran manapun tidak perlu dihitung ulang.
+    zona_opsi1/2/3, n_digit: PERSIS seperti sebelumnya -- kolom
+    Opsi1/Opsi2/Opsi3 tetap dihitung independen dari
+    zona_pasaran_pilihan, berdasarkan tanggal yang ditampilkan,
+    lewat Ddwn2/3/4 seperti biasa.
     """
     n_digit = max(4, min(int(n_digit), 9))
-    jumlah_baris = max(1, min(int(jumlah_baris), 100))
 
     decoded = decode_zona_pasaran(zona_pasaran_pilihan)
     if decoded is None:
         return []
     opsi_pilihan, zona_label_pilihan = decoded
 
+    if tanggal_acuan:
+        y, m, d = tanggal_acuan.split("-")
+        tanggal_target = f"{d}-{m}-{y}"  # yyyy-mm-dd -> dd-mm-yyyy (format history.tanggal)
+    else:
+        tanggal_target = _hari_ini_str()
+
     conn = get_db_connection()
     try:
-        rows = ambil_riwayat_zona(conn, opsi_pilihan, zona_label_pilihan, jumlah_baris, tanggal_acuan)
-        tanggal_list = list(dict.fromkeys(r["tanggal"] for r in rows))  # dedup, urutan dipertahankan
+        rows = ambil_pasaran_zona_per_tanggal(conn, opsi_pilihan, zona_label_pilihan, tanggal_target)
 
         peta_opsi = {}
         if zona_opsi1:
-            peta_opsi[1] = _ambil_ranking_batch(conn, tanggal_list, 1, zona_opsi1)
+            peta_opsi[1] = _ambil_ranking_batch(conn, [tanggal_target], 1, zona_opsi1)
         if zona_opsi2:
-            peta_opsi[2] = _ambil_ranking_batch(conn, tanggal_list, 2, zona_opsi2)
+            peta_opsi[2] = _ambil_ranking_batch(conn, [tanggal_target], 2, zona_opsi2)
         if zona_opsi3:
-            peta_opsi[3] = _ambil_ranking_batch(conn, tanggal_list, 3, zona_opsi3)
+            peta_opsi[3] = _ambil_ranking_batch(conn, [tanggal_target], 3, zona_opsi3)
         conn.commit()  # simpan baris cache baru yang barusan ditulis
     finally:
         conn.close()
