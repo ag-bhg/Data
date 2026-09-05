@@ -1,59 +1,87 @@
 <!doctype html>
 <html lang="id">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Draw History — Demo Lokal</title>
-  <style>
-    body{font-family:system-ui,sans-serif;max-width:1000px;margin:0 auto;padding:0 16px 40px;background:#f5f5f5;color:#222}
-    .card{background:#fff;border-radius:12px;padding:20px;box-shadow:0 2px 10px #0001;margin-top:20px}
-    button{padding:10px 16px;border:0;border-radius:8px;cursor:pointer}
-    table{width:100%;border-collapse:collapse;margin-top:16px}
-    th,td{text-align:left;padding:10px;border-bottom:1px solid #ddd}
-    th{background:#f0f0f0}
-    .pager{display:flex;gap:8px;margin-top:18px;flex-wrap:wrap;align-items:center}
-    .pager a{padding:7px 11px;background:#eee;border-radius:7px;text-decoration:none;color:#222}
-    .msg{padding:10px;border-radius:8px;margin:10px 0}
-    .success{background:#e7f7e7}.error{background:#fde8e8}
-    small{color:#666}
-    .filter-periode{display:flex;gap:8px;align-items:center;margin-top:14px}
-    .filter-periode select{padding:8px 10px;border-radius:8px;border:1px solid #ccc;background:#fff}
-    .filter-periode label{font-size:14px;color:#444}
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Analisis Angka per Zona Waktu</title>
+<style>
+  :root{
+    --bg:#0b0d12; --panel:#12151c; --panel2:#171b24; --line:#232838;
+    --text:#e8ebf3; --muted:#8b93a7; --blue:#3d8bfd; --green:#2ecc71;
+    --gold:#f5c542;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; padding:16px; background:var(--bg); color:var(--text);
+    font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+    padding-bottom:64px;
+  }
+  h1{font-size:1.1rem; margin:0 0 4px}
+  p.sub{color:var(--muted); font-size:.8rem; margin:0 0 14px}
+  .card{
+    background:var(--panel); border:1px solid var(--line);
+    border-radius:14px; padding:14px; margin-bottom:14px;
+  }
+  .field{margin-bottom:12px}
+  .field label{display:block; font-size:.72rem; color:var(--muted); margin-bottom:4px; text-transform:uppercase}
+  select{
+    width:100%; padding:10px; border-radius:8px; border:1px solid var(--line);
+    background:var(--panel2); color:var(--text); font-size:.9rem;
+  }
+  .grid3{display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:8px}
+  input[type="date"]{
+    width:100%; padding:10px; border-radius:8px; border:1px solid var(--line);
+    background:var(--panel2); color:var(--text); font-size:.9rem;
+    color-scheme:dark; font-family:inherit;
+  }
+  .btn-tampilkan{
+    margin-top:6px; width:100%; padding:12px; border:none; border-radius:10px;
+    background:var(--blue); color:#fff; font-size:.95rem; font-weight:600;
+  }
+  table{width:100%; border-collapse:collapse; font-size:.78rem}
+  th,td{padding:8px 4px; text-align:center; border-bottom:1px solid var(--line)}
+  th{color:var(--muted); font-weight:600; font-size:.68rem; text-transform:uppercase}
+  td.tgl{color:var(--muted); font-size:.66rem; white-space:nowrap}
+  td.no{font-weight:700; color:var(--gold)}
+  td.opsi{font-variant-numeric:tabular-nums; letter-spacing:1px}
+  td.tanya{color:var(--muted)}
+  .cocok{color:var(--green); font-weight:700}
+  .empty{color:var(--muted); font-size:.82rem; text-align:center; padding:14px}
+  .legend{font-size:.7rem; color:var(--muted); margin-top:10px; line-height:1.5}
+  .table-wrap{overflow-x:auto; overflow-y:auto; max-height:70vh}
+  .table-wrap table{border-collapse:collapse; width:100%}
+  .table-wrap thead th{position:sticky; top:0; z-index:1; background:var(--panel)}
 
-    /* ===== Topbar + menu hamburger ===== */
-    .topbar{
-      position:sticky; top:0; z-index:20;
-      display:flex; align-items:center; gap:12px;
-      background:#1c1f26; color:#fff; padding:12px 16px;
-    }
-    .hamburger{
-      width:36px; height:36px; border:0; border-radius:8px;
-      background:transparent; cursor:pointer;
-      display:flex; flex-direction:column; justify-content:center; gap:5px; align-items:center;
-    }
-    .hamburger span{display:block; width:20px; height:2px; background:#fff; border-radius:2px}
-    .topbar-title{font-size:15px; font-weight:600}
+  /* ===== Topbar + menu hamburger ===== */
+  .topbar{
+    display:flex; align-items:center; gap:12px;
+    margin:-16px -16px 16px; padding:12px 16px;
+    background:var(--panel2); border-bottom:1px solid var(--line);
+  }
+  .hamburger{
+    width:36px; height:36px; border:0; border-radius:8px;
+    background:transparent; cursor:pointer;
+    display:flex; flex-direction:column; justify-content:center; gap:5px; align-items:center;
+  }
+  .hamburger span{display:block; width:20px; height:2px; background:var(--text); border-radius:2px}
+  .topbar-title{font-size:.9rem; font-weight:600; color:var(--text)}
 
-    .menu-overlay{
-      position:fixed; inset:0; background:#0006; z-index:29;
-      display:none;
-    }
-    .menu-overlay.open{display:block}
+  .menu-overlay{position:fixed; inset:0; background:#0008; z-index:29; display:none}
+  .menu-overlay.open{display:block}
 
-    .menu-panel{
-      position:fixed; top:0; left:0; bottom:0; width:220px; z-index:30;
-      background:#fff; box-shadow:2px 0 16px #0003;
-      transform:translateX(-100%); transition:transform .2s ease;
-      padding:16px 0; overflow-y:auto;
-    }
-    .menu-panel.open{transform:translateX(0)}
-    .menu-panel h2{font-size:13px; color:#888; text-transform:uppercase; margin:0 16px 8px}
-    .menu-panel a{
-      display:block; padding:12px 16px; color:#222; text-decoration:none; font-size:15px;
-    }
-    .menu-panel a.active{background:#eef4ff; color:#2255cc; font-weight:600}
-    .menu-panel a:not(.active):hover{background:#f5f5f5}
-  </style>
+  .menu-panel{
+    position:fixed; top:0; left:0; bottom:0; width:200px; z-index:30;
+    background:var(--panel); box-shadow:2px 0 16px #0006;
+    transform:translateX(-100%); transition:transform .2s ease;
+    padding:16px 0; overflow-y:auto; border-right:1px solid var(--line);
+  }
+  .menu-panel.open{transform:translateX(0)}
+  .menu-panel h2{font-size:.68rem; color:var(--muted); text-transform:uppercase; margin:0 16px 8px}
+  .menu-panel a{display:block; padding:12px 16px; color:var(--text); text-decoration:none; font-size:.88rem}
+  .menu-panel a.active{background:#132038; color:#bcd6ff; font-weight:600}
+  .menu-panel a:not(.active):hover{background:var(--panel2)}
+</style>
 </head>
 <body>
 
@@ -67,98 +95,184 @@
 <div class="menu-overlay" id="menuOverlay"></div>
 <nav class="menu-panel" id="menuPanel">
   <h2>Menu</h2>
-  <a href="{{ url_for('index') }}" class="active">Home</a>
-  <a href="{{ url_for('analisis_waktu.halaman_analisis_waktu') }}">Analisis</a>
+  <a href="{{ url_for('index') }}">Home</a>
+  <a href="{{ url_for('analisis_waktu.halaman_analisis_waktu') }}" class="active">Analisis</a>
 </nav>
 
-<div class="card">
-  <h1>Draw History — Demo Lokal</h1>
-  <p><small>Total data tersimpan: {{ total }}</small></p>
+  <h1>Analisis Angka per Zona Waktu</h1>
+  <p class="sub">Angka terbaik = digit 0-9 paling sering hadir (gabungan semua pasaran satu zona, tanggal yang sama).</p>
 
-  <form method="post" action="{{ url_for('manual_sync') }}">
-    <input type="text" name="kode" placeholder="Kode pengaman" required
-           style="padding:8px;border-radius:6px;border:1px solid #ccc;margin-right:6px">
-    <button type="submit">Update Data</button>
-  </form>
+  <div class="card">
+    <div class="grid2">
+      <div class="field">
+        <label>Ddwn1 — Zona Pasaran</label>
+        <select id="ddwn1"><option value="">Memuat...</option></select>
+      </div>
+      <div class="field">
+        <label>Pilih Tanggal</label>
+        <input type="date" id="tanggalAcuan">
+      </div>
+    </div>
 
-  <!-- Dropdown periode, seperti dropdown "Semua / <nama pasaran>"
-       di situs sumber. Auto-submit lewat GET ke "/" begitu dipilih,
-       tabel & pager langsung mengikuti periode terpilih. Badge
-       ✓/⚠ di depan tiap opsi = status dari get_kode_pasaran_status()
-       (lihat database.py) -- cuma muncul untuk kode yang ada
-       jadwalnya. -->
-  <form method="get" action="{{ url_for('index') }}" class="filter-periode">
-    <label for="kode-top">Periode:</label>
-    <select name="kode" id="kode-top" onchange="this.form.submit()">
-      <option value="" {% if not selected_kode %}selected{% endif %}>Semua</option>
-      {% for k in kode_options %}
-      {% set st = kode_status.get(k) %}
-      <option value="{{ k }}" {% if k == selected_kode %}selected{% endif %}>{% if st %}{% if st.telat == True %}⚠ {% elif st.telat == False %}✓ {% endif %}{% endif %}{{ k }}</option>
-      {% endfor %}
-    </select>
-    <noscript><button type="submit">Tampilkan</button></noscript>
-  </form>
+    <div class="grid3">
+      <div class="field">
+        <label>Ddwn2 — Zona (Opsi1, 4 zona)</label>
+        <select id="ddwn2"><option value="">-</option></select>
+      </div>
+      <div class="field">
+        <label>Ddwn3 — Zona (Opsi2, 3 zona)</label>
+        <select id="ddwn3"><option value="">-</option></select>
+      </div>
+      <div class="field">
+        <label>Ddwn4 — Zona (Opsi3, 2 zona)</label>
+        <select id="ddwn4"><option value="">-</option></select>
+      </div>
+    </div>
 
-  {% if selected_kode %}
-    {% if selected_info %}
-    <p><small>
-      {{ selected_info.nama }} — Tutup: {{ selected_info.tutup }} · Hasil: {{ selected_info.hasil }}
-      {% if selected_info.telat == True %}
-        · ⚠ Terlambat (terakhir update: {{ selected_info.terakhir or "belum pernah" }})
-      {% elif selected_info.telat == False %}
-        · ✓ Sudah update hari ini
-      {% endif %}
-    </small></p>
-    {% else %}
-    <p><small>Jadwal untuk periode "{{ selected_kode }}" belum tersedia.</small></p>
-    {% endif %}
-  {% endif %}
+    <div class="field">
+      <label>Ddwn5 — Jumlah Angka Terbaik Ditampilkan</label>
+      <select id="ddwn5">
+        <option value="4">4</option>
+        <option value="5">5</option>
+        <option value="6">6</option>
+        <option value="7" selected>7</option>
+        <option value="8">8</option>
+        <option value="9">9</option>
+      </select>
+    </div>
 
-  {% with messages = get_flashed_messages(with_categories=true) %}
-    {% for category, message in messages %}
-      <div class="msg {{ category }}">{{ message }}</div>
-    {% endfor %}
-  {% endwith %}
-
-  <table>
-    <thead><tr><th>Tanggal</th><th>Periode</th><th>Nomor</th></tr></thead>
-    <tbody>
-      {% for row in rows %}
-      <tr>
-        <td>{{ row["tanggal"] }}</td>
-        <td>{{ row["periode"] }}</td>
-        <td>{{ row["nomor"] }}</td>
-      </tr>
-      {% else %}
-      <tr><td colspan="3">Belum ada data{% if selected_kode %} untuk periode "{{ selected_kode }}"{% endif %}. Klik Update Data.</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
-
-  <div class="pager">
-    {% if page > 1 %}<a href="?page={{ page-1 }}{% if selected_kode %}&kode={{ selected_kode }}{% endif %}">← Sebelumnya</a>{% endif %}
-    <span>Halaman {{ page }} / {{ pages }}</span>
-    {% if page < pages %}<a href="?page={{ page+1 }}{% if selected_kode %}&kode={{ selected_kode }}{% endif %}">Berikutnya →</a>{% endif %}
+    <button class="btn-tampilkan" id="btnTampilkan">Tampilkan Tabel</button>
   </div>
-</div>
+
+  <div class="card" id="hasilCard" style="display:none">
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Prd</th>
+            <th>No</th>
+            <th>Opsi1</th>
+            <th>Opsi2</th>
+            <th>Opsi3</th>
+          </tr>
+        </thead>
+        <tbody id="tbodyHasil"></tbody>
+      </table>
+    </div>
+    <div class="legend">
+      Kolom "No" berisi "?" kalau pasaran itu hari ini belum ada hasilnya (belum draw). Kolom "Opsi1/2/3" berisi "?" kalau belum memenuhi syarat pengujian (minimal 7 pasaran di zona itu belum semuanya keluar pada tanggal tersebut).
+    </div>
+  </div>
 
 <script>
-  const btnMenu = document.getElementById('btnMenu');
-  const menuPanel = document.getElementById('menuPanel');
-  const menuOverlay = document.getElementById('menuOverlay');
+const ddwn1 = document.getElementById('ddwn1');
+const ddwn2 = document.getElementById('ddwn2');
+const ddwn3 = document.getElementById('ddwn3');
+const ddwn4 = document.getElementById('ddwn4');
+const ddwn5 = document.getElementById('ddwn5');
+const tanggalAcuan = document.getElementById('tanggalAcuan');
+const hasilCard = document.getElementById('hasilCard');
+const tbodyHasil = document.getElementById('tbodyHasil');
 
-  function bukaMenu(){
-    menuPanel.classList.add('open');
-    menuOverlay.classList.add('open');
+// Default: hari ini -- sama seperti perilaku sebelumnya sebelum ada
+// pilihan tanggal. User tetap bisa ganti ke tanggal lain.
+tanggalAcuan.valueAsDate = new Date();
+
+function isiDropdownZona(select, zonaList){
+  select.innerHTML = '<option value="">Pilih zona</option>' +
+    zonaList.map(z => `<option value="${z.label}">${z.label} (${z.rentang})</option>`).join('');
+}
+
+fetch('/api/analisis-waktu/opsi-tabel')
+  .then(r => r.json())
+  .then(data => {
+    // data.zona_pasaran_list: [{value:"Za1", label:"Za1 (00:01-06:00)", opsi:1}, ...]
+    // dikelompokkan per opsi pakai <optgroup> supaya kelihatan Za/Zb/Zc
+    // itu asalnya dari Opsi1/Opsi2/Opsi3 yang mana.
+    const namaOpsi = {1: 'Opsi1 (4 zona)', 2: 'Opsi2 (3 zona)', 3: 'Opsi3 (2 zona)'};
+    const perOpsi = {1: [], 2: [], 3: []};
+    data.zona_pasaran_list.forEach(z => perOpsi[z.opsi].push(z));
+
+    ddwn1.innerHTML = '<option value="">Pilih zona pasaran</option>' +
+      [1, 2, 3].map(opsi => `
+        <optgroup label="${namaOpsi[opsi]}">
+          ${perOpsi[opsi].map(z => `<option value="${z.value}">${z.label}</option>`).join('')}
+        </optgroup>
+      `).join('');
+
+    isiDropdownZona(ddwn2, data.zona_opsi1);
+    isiDropdownZona(ddwn3, data.zona_opsi2);
+    isiDropdownZona(ddwn4, data.zona_opsi3);
+  });
+
+document.getElementById('btnTampilkan').onclick = () => {
+  const zonaPasaran = ddwn1.value;
+  if (!zonaPasaran){
+    alert('Pilih Zona Pasaran (Ddwn1) dulu.');
+    return;
   }
-  function tutupMenu(){
-    menuPanel.classList.remove('open');
-    menuOverlay.classList.remove('open');
+  const params = new URLSearchParams({
+    kode: zonaPasaran,
+    zona1: ddwn2.value,
+    zona2: ddwn3.value,
+    zona3: ddwn4.value,
+    n: ddwn5.value,
+    tanggal: tanggalAcuan.value,
+  });
+
+  hasilCard.style.display = 'block';
+  tbodyHasil.innerHTML = '<tr><td colspan="5" class="empty">Memuat...</td></tr>';
+
+  fetch(`/api/analisis-waktu/tabel?${params.toString()}`)
+    .then(r => r.json())
+    .then(renderTabel)
+    .catch(() => {
+      tbodyHasil.innerHTML = '<tr><td colspan="5" class="empty">Gagal memuat data. Coba lagi, atau pilih rentang tanggal/zona yang lebih sedikit.</td></tr>';
+    });
+};
+
+const btnMenu = document.getElementById('btnMenu');
+const menuPanel = document.getElementById('menuPanel');
+const menuOverlay = document.getElementById('menuOverlay');
+function bukaMenu(){ menuPanel.classList.add('open'); menuOverlay.classList.add('open'); }
+function tutupMenu(){ menuPanel.classList.remove('open'); menuOverlay.classList.remove('open'); }
+btnMenu.addEventListener('click', bukaMenu);
+menuOverlay.addEventListener('click', tutupMenu);
+
+// Tandai digit di string "angka terbaik" (opsiStr, mis. "7890154")
+// yang MUNCUL di nomor pasaran baris ini (mis. "0065") -- dikasih
+// warna hijau (tanpa kurung). Kalau nomor belum ada ("?"), tampilkan
+// apa adanya tanpa tanda apa pun (belum ada yang bisa dicocokkan).
+function tandaiDigitCocok(opsiStr, nomor){
+  if (!opsiStr) return null;
+  if (!nomor || nomor === '?') return opsiStr;
+
+  const digitDiNomor = new Set(String(nomor).split(''));
+  return opsiStr.split('').map(d =>
+    digitDiNomor.has(d) ? `<span class="cocok">${d}</span>` : d
+  ).join('');
+}
+
+function renderTabel(data){
+  if (data.error){
+    tbodyHasil.innerHTML = `<tr><td colspan="5" class="empty">${data.error}</td></tr>`;
+    return;
+  }
+  if (!data.tabel.length){
+    tbodyHasil.innerHTML = '<tr><td colspan="5" class="empty">Tidak ada pasaran di zona ini.</td></tr>';
+    return;
   }
 
-  btnMenu.addEventListener('click', bukaMenu);
-  menuOverlay.addEventListener('click', tutupMenu);
+  tbodyHasil.innerHTML = data.tabel.map(row => `
+    <tr>
+      <td class="tgl">${row.periode}<br>${row.tanggal}</td>
+      <td class="no ${row.nomor === '?' ? 'tanya' : ''}">${row.nomor}</td>
+      <td class="opsi ${row.opsi1 ? '' : 'tanya'}">${tandaiDigitCocok(row.opsi1, row.nomor) || '?'}</td>
+      <td class="opsi ${row.opsi2 ? '' : 'tanya'}">${tandaiDigitCocok(row.opsi2, row.nomor) || '?'}</td>
+      <td class="opsi ${row.opsi3 ? '' : 'tanya'}">${tandaiDigitCocok(row.opsi3, row.nomor) || '?'}</td>
+    </tr>
+  `).join('');
+}
 </script>
-
 </body>
 </html>
