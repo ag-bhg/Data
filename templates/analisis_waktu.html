@@ -102,7 +102,7 @@
   <div class="card">
     <div class="grid2">
       <div class="field">
-        <label>Ddwn1 — Pilih Pasaran</label>
+        <label>Ddwn1 — Zona Pasaran</label>
         <select id="ddwn1"><option value="">Memuat...</option></select>
       </div>
       <div class="field">
@@ -157,7 +157,7 @@
       </table>
     </div>
     <div class="legend">
-      "?" = belum memenuhi syarat pengujian (minimal 7 pasaran di zona itu belum semuanya keluar pada tanggal tersebut).
+      Kolom "No" berisi "?" kalau pasaran itu hari ini belum ada hasilnya (belum draw). Kolom "Opsi1/2/3" berisi "?" kalau belum memenuhi syarat pengujian (minimal 7 pasaran di zona itu belum semuanya keluar pada tanggal tersebut).
     </div>
   </div>
 
@@ -183,16 +183,19 @@ function isiDropdownZona(select, zonaList){
 fetch('/api/analisis-waktu/opsi-tabel')
   .then(r => r.json())
   .then(data => {
-    // Urutan data.periode_list SUDAH dari server: paling cepat
-    // result dulu (lihat daftar_periode() di analisis_waktu.py).
-    // jam_label ditulis SEKALI di sini dan tidak pernah diubah lagi
-    // -- tidak ada setInterval/refresh, supaya dropdown tidak
-    // kedip saat dibuka/ditutup dan tidak ada proses berjalan
-    // terus-menerus di browser.
-    ddwn1.innerHTML = '<option value="">Pilih pasaran</option>' +
-      data.periode_list.map(p =>
-        `<option value="${p.kode}">${p.kode} — ${p.nama} (${p.jam_label || '-'})</option>`
-      ).join('');
+    // data.zona_pasaran_list: [{value:"Za1", label:"Za1 (00:01-06:00)", opsi:1}, ...]
+    // dikelompokkan per opsi pakai <optgroup> supaya kelihatan Za/Zb/Zc
+    // itu asalnya dari Opsi1/Opsi2/Opsi3 yang mana.
+    const namaOpsi = {1: 'Opsi1 (4 zona)', 2: 'Opsi2 (3 zona)', 3: 'Opsi3 (2 zona)'};
+    const perOpsi = {1: [], 2: [], 3: []};
+    data.zona_pasaran_list.forEach(z => perOpsi[z.opsi].push(z));
+
+    ddwn1.innerHTML = '<option value="">Pilih zona pasaran</option>' +
+      [1, 2, 3].map(opsi => `
+        <optgroup label="${namaOpsi[opsi]}">
+          ${perOpsi[opsi].map(z => `<option value="${z.value}">${z.label}</option>`).join('')}
+        </optgroup>
+      `).join('');
 
     isiDropdownZona(ddwn2, data.zona_opsi1);
     isiDropdownZona(ddwn3, data.zona_opsi2);
@@ -200,13 +203,13 @@ fetch('/api/analisis-waktu/opsi-tabel')
   });
 
 document.getElementById('btnTampilkan').onclick = () => {
-  const kode = ddwn1.value;
-  if (!kode){
-    alert('Pilih pasaran (Ddwn1) dulu.');
+  const zonaPasaran = ddwn1.value;
+  if (!zonaPasaran){
+    alert('Pilih Zona Pasaran (Ddwn1) dulu.');
     return;
   }
   const params = new URLSearchParams({
-    kode,
+    kode: zonaPasaran,
     zona1: ddwn2.value,
     zona2: ddwn3.value,
     zona3: ddwn4.value,
@@ -246,7 +249,7 @@ function renderTabel(data){
   tbodyHasil.innerHTML = data.tabel.map(row => `
     <tr>
       <td class="tgl">${row.periode}<br>${row.tanggal}</td>
-      <td class="no">${row.nomor}</td>
+      <td class="no ${row.nomor === '?' ? 'tanya' : ''}">${row.nomor}</td>
       <td class="opsi ${row.opsi1 ? '' : 'tanya'}">${row.opsi1 || '?'}</td>
       <td class="opsi ${row.opsi2 ? '' : 'tanya'}">${row.opsi2 || '?'}</td>
       <td class="opsi ${row.opsi3 ? '' : 'tanya'}">${row.opsi3 || '?'}</td>
