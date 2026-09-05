@@ -48,7 +48,9 @@
   td.tanya{color:var(--muted)}
   .empty{color:var(--muted); font-size:.82rem; text-align:center; padding:14px}
   .legend{font-size:.7rem; color:var(--muted); margin-top:10px; line-height:1.5}
-  .table-wrap{overflow-x:auto}
+  .table-wrap{overflow-x:auto; overflow-y:auto; max-height:70vh}
+  .table-wrap table{border-collapse:collapse; width:100%}
+  .table-wrap thead th{position:sticky; top:0; z-index:1; background:var(--panel)}
 
   /* ===== Topbar + menu hamburger ===== */
   .topbar{
@@ -242,7 +244,7 @@ function renderTabel(data){
     return;
   }
   if (!data.tabel.length){
-    tbodyHasil.innerHTML = '<tr><td colspan="5" class="empty">Belum ada data untuk pasaran ini.</td></tr>';
+    tbodyHasil.innerHTML = '<tr><td colspan="5" class="empty">Tidak ada pasaran di zona ini.</td></tr>';
     return;
   }
 
